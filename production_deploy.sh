@@ -5,6 +5,17 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPTS_DIR="$SCRIPT_DIR/scripts"
 CONFIG_DIR="$SCRIPT_DIR/config"
 
+# Install required packages first, before any other operations
+install_dependencies() {
+    echo "Installing required packages..."
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update
+    apt-get install -y jq net-tools mailutils file
+}
+
+# Run initial package installation
+install_dependencies
+
 # Enable debug output temporarily
 set -x
 
@@ -25,11 +36,6 @@ set +x
 pre_deployment_check() {
     log "Running pre-deployment checks..."
     cd "$SCRIPT_DIR" || exit 1
-    
-    # Install required packages
-    log "Installing required packages..."
-    DEBIAN_FRONTEND=noninteractive apt-get update
-    DEBIAN_FRONTEND=noninteractive apt-get install -y jq net-tools mailutils file
     
     # Check system requirements
     if ! command -v systemctl &> /dev/null; then

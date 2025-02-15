@@ -75,11 +75,6 @@ init_environment() {
         chmod 750 "$dir"
     done
     
-    # Install dependencies after paths are set
-    log "Installing required packages..."
-    apt-get update
-    apt-get install -y jq net-tools mailutils file
-    
     # Source all script functions
     log "Sourcing script functions..."
     
