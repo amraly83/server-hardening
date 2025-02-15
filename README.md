@@ -6,8 +6,8 @@ This repository contains scripts for hardening Ubuntu 22.04 servers with strong 
 
 1. Clone this repository on your Ubuntu 22.04 VPS:
 ```bash
-git clone <repository-url>
-cd hardening
+git clone https://github.com/amraly83/server-hardening.git
+cd server-hardening
 ```
 
 2. Edit configuration (using nano):

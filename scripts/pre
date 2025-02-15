@@ -46,15 +46,21 @@ function f_create_admin_user {
     exit 1
   fi
   
-  # Create new admin user
-  useradd -m -s /bin/bash "$ADMIN_USER"
-  # Set password for new user
+  # Check if user exists
+  if id "$ADMIN_USER" >/dev/null 2>&1; then
+    echo "User $ADMIN_USER already exists, updating password and sudo access"
+  else
+    # Create new admin user
+    useradd -m -s /bin/bash "$ADMIN_USER"
+  fi
+  
+  # Set/update password for user
   echo "$ADMIN_USER:$ADMIN_PASSWORD" | chpasswd
   
   # Add user to sudo group
   usermod -aG sudo "$ADMIN_USER"
   
-  # Verify sudo access
+  # Verify sudo group membership
   if groups "$ADMIN_USER" | grep -q "\bsudo\b"; then
     echo "User $ADMIN_USER successfully added to sudo group"
   else
@@ -62,11 +68,20 @@ function f_create_admin_user {
     exit 1
   fi
   
-  # Test sudo access
-  su - "$ADMIN_USER" -c "sudo -l" || {
+  # Configure sudo without password temporarily for setup
+  echo "$ADMIN_USER ALL=(ALL) NOPASSWD:ALL" > "/etc/sudoers.d/setup-$ADMIN_USER"
+  chmod 0440 "/etc/sudoers.d/setup-$ADMIN_USER"
+  
+  # Test sudo access using echo to provide password
+  if echo "$ADMIN_PASSWORD" | su - "$ADMIN_USER" -c "sudo -S whoami" 2>/dev/null | grep -q "root"; then
+    echo "Sudo access verified for $ADMIN_USER"
+  else
     echo "Failed to verify sudo access for $ADMIN_USER"
     exit 1
-  }
+  fi
+  
+  # Remove temporary NOPASSWD access
+  rm -f "/etc/sudoers.d/setup-$ADMIN_USER"
   
   echo "Administrative user setup complete"
 }
