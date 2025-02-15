@@ -33,6 +33,12 @@ run_integration_tests() {
                 test_status=1
             fi
         done
+
+        # Ensure SSH is listening on the configured port
+        if ! netstat -ln | grep -q ":$SSH_PORT.*LISTEN"; then
+            echo "FAIL: SSH not listening on configured port $SSH_PORT"
+            test_status=1
+        fi
     }
     
     # Test Firewall Configuration
@@ -58,6 +64,7 @@ run_integration_tests() {
             "pam_faillock.so"
         )
         
+        # Ensure PAM modules are configured
         for module in "${required_modules[@]}"; do
             if ! grep -q "$module" /etc/pam.d/*; then
                 echo "FAIL: PAM module $module not configured"
@@ -68,11 +75,13 @@ run_integration_tests() {
     
     # Test System Auditing
     test_audit_config() {
+        # Ensure home directory auditing is configured
         if ! auditctl -l | grep -q "dir=/home/"; then
             echo "FAIL: Home directory auditing not configured"
             test_status=1
         fi
-        
+
+        # Ensure privileged command auditing is configured
         if ! auditctl -l | grep -q "key=privileged"; then
             echo "FAIL: Privileged command auditing not configured"
             test_status=1
