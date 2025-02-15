@@ -10,6 +10,21 @@ LOCK_FILE="$STATE_DIR/deployment.lock"
 init_state() {
     mkdir -p "$STATE_DIR"
     
+    # Check for existing lock
+    if [ -f "$LOCK_FILE" ]; then
+        pid=$(cat "$LOCK_FILE")
+        if kill -0 "$pid" 2>/dev/null; then
+            echo "ERROR: Another deployment process is running (PID: $pid)"
+            exit 1
+        else
+            # Clean up stale lock
+            rm -f "$LOCK_FILE"
+        fi
+    fi
+    
+    # Create lock
+    echo $$ > "$LOCK_FILE"
+    
     if [ ! -f "$STATE_FILE" ]; then
         cat > "$STATE_FILE" << EOF
 {
@@ -94,3 +109,17 @@ track_deployment() {
 
 # Example usage in deployment:
 # track_deployment "ssh_hardening" "bash scripts/sshdconfig"
+
+# Set up cleanup trap
+trap cleanup_state EXIT
+
+cleanup_state() {
+    # Clean up in case of interruption
+    rm -f "$LOCK_FILE"
+    if [ -f "$STATE_FILE" ]; then
+        jq --arg time "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
+           --arg status "interrupted" \
+           '.end_time = $time | .status = $status' \
+           "$STATE_FILE" > "${STATE_FILE}.tmp" && mv "${STATE_FILE}.tmp" "$STATE_FILE"
+    fi
+}

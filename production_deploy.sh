@@ -6,15 +6,29 @@ SCRIPTS_DIR="$SCRIPT_DIR/scripts"
 CONFIG_DIR="$SCRIPT_DIR/config"
 DEPLOYMENT_LOG="/var/log/hardening/deployment.log"
 
-# Ensure we're root
+# Ensure we're root and running on Linux
 if [ "$EUID" -ne 0 ]; then
     echo "This script must be run as root"
     exit 1
 fi
 
+if [[ "$(uname -s)" != "Linux" ]]; then
+    echo "This script must be run on Linux"
+    exit 1
+fi
+
 # Error handling
 set -euo pipefail
-trap 'echo "Error occurred at line $LINENO. Exit code: $?"' ERR
+trap 'echo "Error occurred at line $LINENO. Exit code: $?"; cleanup_on_error' ERR
+
+# Cleanup function for error handling
+cleanup_on_error() {
+    echo "Error occurred, performing cleanup..."
+    # Reset any partial configuration changes
+    if [ -f "/var/backups/hardening/pre_hardening_latest.tar.gz" ]; then
+        tar xzf "/var/backups/hardening/pre_hardening_latest.tar.gz" -C / 2>/dev/null || true
+    fi
+}
 
 # Install required packages first, before any other operations
 install_dependencies() {
@@ -35,21 +49,38 @@ install_dependencies() {
 # Ensure log directory exists
 mkdir -p "$(dirname "$DEPLOYMENT_LOG")"
 
+# Create symlink to latest backup for recovery
+create_backup_symlink() {
+    local backup_dir="/var/backups/hardening"
+    local latest_backup=$(find "$backup_dir" -name "pre_hardening_*" -type f -printf '%T@ %p\n' | sort -n | tail -1 | cut -d' ' -f2-)
+    if [ -n "$latest_backup" ]; then
+        ln -sf "$latest_backup" "$backup_dir/pre_hardening_latest.tar.gz"
+    fi
+}
+
 # Run initial package installation
 install_dependencies
 
-# Enable debug output temporarily
+# Create backup symlink for recovery
+create_backup_symlink
+
+# Enable debug output with better formatting
+export PS4='+(${BASH_SOURCE}:${LINENO}): ${FUNCNAME[0]:+${FUNCNAME[0]}(): }'
 set -x
 
 # Ensure script permissions
 chmod +x "$SCRIPTS_DIR"/*
 
-# Source initialization script with absolute path
+# Source initialization script with absolute path and error handling
 if [ ! -f "$SCRIPTS_DIR/init.sh" ]; then
     echo "ERROR: init.sh not found in $SCRIPTS_DIR"
     exit 1
 fi
 source "$SCRIPTS_DIR/init.sh"
+
+# Initialize state tracking file
+STATE_FILE="/var/lib/hardening/deployment_state.json"
+mkdir -p "$(dirname "$STATE_FILE")"
 
 # List available functions for debugging
 echo "Available hardening functions:"
