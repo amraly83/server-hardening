@@ -1,9 +1,15 @@
 [Unit]
-Description=Aide Check
+Description=AIDE Automated Security Check
+Documentation=man:aide(1)
 
 [Service]
-Type=simple
-ExecStart=/usr/bin/aide --check --config /etc/aide/aide.conf
+Type=oneshot
+ExecStart=/usr/local/bin/aide-check
+ExecStartPost=/bin/sh -c 'systemctl start hardening-monitor.service'
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+CPUSchedulingPolicy=batch
 
 [Install]
 WantedBy=multi-user.target

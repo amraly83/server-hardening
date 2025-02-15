@@ -5,14 +5,17 @@ function f_mfa_config {
   apt-get -y install libpam-google-authenticator
 
   # Configure PAM for SSH to require MFA
-  sed -i '/^@include common-auth/a auth required pam_google_authenticator.so nullok' /etc/pam.d/sshd
+  if ! grep -q "pam_google_authenticator.so" /etc/pam.d/sshd; then
+    sed -i '/@include common-auth/a auth required pam_google_authenticator.so nullok' /etc/pam.d/sshd
+  fi
 
   # Update SSHD config to use MFA
   if ! grep -q "^AuthenticationMethods" "$SSHDFILE"; then
-    echo "AuthenticationMethods publickey,keyboard-interactive" >> "$SSHDFILE"
+    echo "AuthenticationMethods publickey,keyboard-interactive publickey,password" >> "$SSHDFILE"
     echo "PubkeyAuthentication yes" >> "$SSHDFILE"
     echo "ChallengeResponseAuthentication yes" >> "$SSHDFILE"
     echo "KbdInteractiveAuthentication yes" >> "$SSHDFILE"
+    echo "UsePAM yes" >> "$SSHDFILE"
     echo "PasswordAuthentication no" >> "$SSHDFILE"  # Disable password-only login
   fi
 

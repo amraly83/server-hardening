@@ -1,0 +1,14 @@
+[Unit]
+Description=Security Hardening Monitor
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/bin/bash /opt/hardening/monitor_security.sh
+Restart=always
+RestartSec=300
+StandardOutput=append:/var/log/hardening-monitor.log
+StandardError=append:/var/log/hardening-monitor.log
+
+[Install]
+WantedBy=multi-user.target

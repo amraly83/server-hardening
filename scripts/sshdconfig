@@ -163,6 +163,55 @@ function f_sshdconfig {
     sed -i 's/TCPKeepAlive.*/TCPKeepAlive no/' "$SSHDCONF"
   fi
 
+  # Create privilege separation directory
+  if [ ! -d "/run/sshd" ]; then
+    mkdir -p /run/sshd
+    chmod 0755 /run/sshd
+  fi
+
+  # Configure PAM for SSH to require MFA
+  sed -i '/@include common-auth/a auth required pam_google_authenticator.so nullok' /etc/pam.d/sshd
+
+  # Update SSHD config
+  cat > "$SSHDFILE" << EOF
+Include /etc/ssh/sshd_config.d/*.conf
+
+Port $SSH_PORT
+Protocol 2
+
+# Authentication
+AuthenticationMethods publickey,keyboard-interactive
+PubkeyAuthentication yes
+PasswordAuthentication no
+ChallengeResponseAuthentication yes
+KbdInteractiveAuthentication yes
+UsePAM yes
+
+# Access restrictions
+PermitRootLogin no
+AllowGroups sudo
+MaxAuthTries 3
+LoginGraceTime 20
+
+# Security settings
+X11Forwarding no
+PermitEmptyPasswords no
+IgnoreRhosts yes
+HostbasedAuthentication no
+PermitUserEnvironment no
+ClientAliveInterval 300
+ClientAliveCountMax 2
+
+# Logging
+LogLevel VERBOSE
+SyslogFacility AUTH
+
+# Strong crypto settings
+Ciphers aes256-gcm@openssh.com,chacha20-poly1305@openssh.com,aes256-ctr
+MACs hmac-sha2-512-etm@openssh.com,hmac-sha2-256-etm@openssh.com
+KexAlgorithms curve25519-sha256@libssh.org,ecdh-sha2-nistp521,ecdh-sha2-nistp384
+EOF
+
   cp "$SSHDCONF" "/etc/ssh/sshd_config.$(date +%y%m%d)"
   grep -vE '#|^$' "/etc/ssh/sshd_config.$(date +%y%m%d)" | sort | uniq > "$SSHDCONF"
   rm "/etc/ssh/sshd_config.$(date +%y%m%d)"
@@ -193,3 +242,49 @@ function f_sshconfig {
   sed -i 's/#.*Ciphers .*/    Ciphers chacha20-poly1305@openssh.com,aes256-gcm@openssh.com,aes256-ctr/g' "$SSHFILE"
   sed -i 's/#.*MACs .*/    MACs hmac-sha2-512-etm@openssh.com,hmac-sha2-256-etm@openssh.com,hmac-sha2-512,hmac-sha2-256/' "$SSHFILE"
 }
+
+# Configure SSH with proper MFA and public key settings
+cat > /etc/ssh/sshd_config << EOF
+Include /etc/ssh/sshd_config.d/*.conf
+
+Port 3333
+Protocol 2
+
+# Authentication settings
+AuthenticationMethods publickey,keyboard-interactive
+PubkeyAuthentication yes
+PasswordAuthentication no
+ChallengeResponseAuthentication yes
+KbdInteractiveAuthentication yes
+UsePAM yes
+
+# Only allow members of sudo group
+AllowGroups sudo
+
+# Security settings
+PermitRootLogin no
+X11Forwarding no
+PermitEmptyPasswords no
+MaxAuthTries 3
+LoginGraceTime 20
+
+# Logging
+SyslogFacility AUTH
+LogLevel VERBOSE
+
+# Other security settings
+IgnoreRhosts yes
+HostbasedAuthentication no
+PermitUserEnvironment no
+ClientAliveInterval 300
+ClientAliveCountMax 2
+EOF
+
+# Configure PAM for SSH with Google Authenticator
+cat > /etc/pam.d/sshd << EOF
+auth required pam_google_authenticator.so nullok
+@include common-auth
+@include common-account
+@include common-session
+@include common-password
+EOF

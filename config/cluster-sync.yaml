@@ -1,0 +1,42 @@
+# Distributed state management for hardening cluster
+version: '1.0'
+
+# Global cluster configuration
+cluster:
+  sync_interval: 300  # seconds
+  health_check_interval: 60  # seconds
+  max_drift_time: 600  # seconds
+  quorum_size: 2  # minimum nodes for consensus
+
+# State verification rules
+state_rules:
+  - component: "ssh"
+    files:
+      - "/etc/ssh/sshd_config"
+      - "/etc/ssh/ssh_config"
+    verify_command: "sshd -t"
+    
+  - component: "firewall"
+    files:
+      - "/etc/ufw/ufw.conf"
+      - "/etc/ufw/user.rules"
+    verify_command: "ufw status verbose"
+    
+  - component: "auditd"
+    files:
+      - "/etc/audit/auditd.conf"
+      - "/etc/audit/rules.d/"
+    verify_command: "auditctl -l"
+
+# Recovery actions
+recovery:
+  max_attempts: 3
+  backoff_time: 300  # seconds
+  notify_on_failure: true
+  
+# Sync exclusions
+exclude_paths:
+  - "/var/log/*"
+  - "/tmp/*"
+  - "*.swp"
+  - "*.bak"

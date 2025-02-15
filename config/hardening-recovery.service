@@ -1,0 +1,17 @@
+[Unit]
+Description=Server Hardening Recovery Service
+After=hardening.service
+StartLimitInterval=1h
+StartLimitBurst=2
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/opt/hardening/recovery.sh
+ExecStartPost=/usr/bin/systemctl start hardening.service
+
+# Notify admin on recovery
+ExecStartPost=/usr/bin/mail -s "ALERT: Hardening Recovery Triggered on $(hostname)" ${ADMINEMAIL}
+
+[Install]
+WantedBy=multi-user.target

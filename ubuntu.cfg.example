@@ -1,0 +1,25 @@
+# Default secure configuration for Ubuntu server hardening
+# Copy this file to ubuntu.cfg and update the values
+
+# === REQUIRED SETTINGS (You MUST change these) ===
+ADMIN_USER=''          # Your admin username, e.g. 'admin'
+ADMIN_PASSWORD=''      # Strong password for admin user
+SSH_PORT='3333'        # Custom SSH port between 1024-65535
+ADMINEMAIL=''         # Your email for security alerts
+
+# === OPTIONAL SETTINGS (Default values are secure) ===
+# Firewall Settings
+FW_ADMIN=''           # Leave empty for rate-limiting instead of IP restriction
+SSH_GRPS='sudo'       # Groups allowed SSH access
+
+# Security Levels
+AUDITD_MODE='1'       # Audit level (1=strict, 0=basic)
+VERBOSE='N'           # Detailed output during installation
+
+# System Configuration
+NTPSERVERPOOL='0.ubuntu.pool.ntp.org 1.ubuntu.pool.ntp.org'  # Time servers
+SYSCTL_CONF='./misc/sysctl.conf'  # System control settings
+KEEP_SNAPD='Y'        # Keep snap package manager
+
+# == DO NOT MODIFY BELOW THIS LINE ==
+CHANGEME='myserver2024'  # Installation verification string

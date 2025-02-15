@@ -1,9 +1,11 @@
 [Unit]
-Description=Aide check every day at midnight
+Description=AIDE Check Timer
+Documentation=man:aide(1)
 
 [Timer]
-OnCalendar=*-*-* 00:00:00
-Unit=aidecheck.service
+OnCalendar=*-*-* 02:00:00
+RandomizedDelaySec=1800
+Persistent=true
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=timers.target

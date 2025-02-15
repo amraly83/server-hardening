@@ -1,0 +1,20 @@
+[Unit]
+Description=Server Hardening Service Manager
+After=network.target sshd.service
+Requires=sshd.service fail2ban.service auditd.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStartPre=/opt/hardening/pre-flight-check.sh
+ExecStart=/opt/hardening/deploy_hardening.sh
+ExecStartPost=/opt/hardening/verify-deployment.sh
+TimeoutStartSec=30min
+
+# Failure handling
+OnFailure=hardening-recovery.service
+StartLimitInterval=1h
+StartLimitBurst=3
+
+[Install]
+WantedBy=multi-user.target
