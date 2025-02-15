@@ -61,7 +61,7 @@ pre_deployment_check() {
     # Verify running as root
     if [ "$EUID" -ne 0 ]; then
         error "This script must be run as root"
-    }
+    fi
     
     # Check Ubuntu version
     if ! lsb_release -a 2>/dev/null | grep -q "Ubuntu 22.04"; then
