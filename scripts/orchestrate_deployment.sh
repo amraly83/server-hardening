@@ -9,10 +9,11 @@ DEPLOYMENT_LOG="$LOG_DIR/deployment.log"
 BACKUP_DIR="/var/backups/hardening"
 
 # Ensure proper script ordering
-declare -A DEPLOYMENT_SEQUENCE=(
+declare -A DEPLOYMENT_SEQUENCE
+DEPLOYMENT_SEQUENCE=(
     ["1_init"]="init.sh"
     ["2_verify"]="pre-flight-check.sh"
-    ["3_backup"]="rollback_manager.sh:create_rollback_point pre_hardening"
+    ["3_backup"]="rollback_manager.sh create_rollback_point pre_hardening"
     ["4_network"]="network_isolation"
     ["5_ssh"]="verify_ssh.sh sshdconfig"
     ["6_auth"]="password mfa"
@@ -36,7 +37,10 @@ verify_prerequisites() {
 
     # Create required directories
     for dir in "$LOG_DIR" "$BACKUP_DIR"; do
-        mkdir -p "$dir"
+        if ! mkdir -p "$dir"; then
+            log_message "Failed to create directory: $dir" "ERROR"
+            exit 1
+        fi
         chmod 750 "$dir"
     done
 }
@@ -46,7 +50,9 @@ run_deployment_sequence() {
     
     for stage in "${!DEPLOYMENT_SEQUENCE[@]}"; do
         log_message "Starting stage: $stage" "INFO"
-        local components=(${DEPLOYMENT_SEQUENCE[$stage]//:/ })
+        
+        # Split components by space instead of colon
+        IFS=' ' read -ra components <<< "${DEPLOYMENT_SEQUENCE[$stage]}"
         
         for component in "${components[@]}"; do
             log_message "Running component: $component" "INFO"
@@ -55,7 +61,9 @@ run_deployment_sequence() {
                 log_message "Failed at stage $stage, component $component" "ERROR"
                 if [[ $stage =~ ^[45] ]]; then  # Critical stages (network and SSH)
                     log_message "Critical component failed, initiating rollback" "ERROR"
-                    bash "$SCRIPT_DIR/rollback_manager.sh" "$last_successful_stage"
+                    if ! bash "$SCRIPT_DIR/rollback_manager.sh" "$last_successful_stage"; then
+                        log_message "Rollback failed" "ERROR"
+                    fi
                     exit 1
                 fi
                 return 1
@@ -63,7 +71,8 @@ run_deployment_sequence() {
         done
         
         last_successful_stage=$stage
-    }
+        log_message "Stage $stage completed successfully" "INFO"
+    done
     
     return 0
 }
@@ -81,4 +90,8 @@ main() {
     log_message "Deployment completed successfully" "SUCCESS"
 }
 
-main "$@"
+# Execute main function with error handling
+if ! main "$@"; then
+    log_message "Script failed" "ERROR"
+    exit 1
+fi
