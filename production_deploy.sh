@@ -55,10 +55,23 @@ pre_deployment_check() {
     log "Running pre-deployment checks..."
     
     # Install required packages
-    if ! command -v jq &> /dev/null; then
-        log "Installing required package: jq"
-        apt-get update && apt-get install -y jq
-    fi
+    log "Installing required packages..."
+    apt-get update
+    apt-get install -y jq net-tools mailutils
+
+    # Create required directories
+    log "Creating required directories..."
+    mkdir -p /var/log/aide
+    mkdir -p /var/log/hardening
+    mkdir -p /var/backups/hardening
+    mkdir -p /etc/hardening
+    touch /var/log/ufw.log
+    
+    # Set proper permissions
+    chmod 750 /var/log/aide
+    chmod 750 /var/log/hardening
+    chmod 750 /var/backups/hardening
+    chmod 750 /etc/hardening
     
     # Check system requirements
     if ! command -v systemctl &> /dev/null; then
