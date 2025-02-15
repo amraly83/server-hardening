@@ -1,0 +1,65 @@
+function f_kernel_protection {
+  echo "[$SCRIPT_COUNT] Configure kernel security parameters"
+
+  # Create kernel hardening configuration
+  cat > /etc/sysctl.d/90-kernel-hardening.conf << EOF
+# Enable kernel page table isolation (KPTI)
+kernel.kptr_restrict = 2
+
+# Restrict dmesg access
+kernel.dmesg_restrict = 1
+
+# Protect against time-wait assassination
+net.ipv4.tcp_rfc1337 = 1
+
+# Enable Exec Shield protection
+kernel.exec-shield = 2
+
+# Enable ASLR (Address Space Layout Randomization)
+kernel.randomize_va_space = 2
+
+# Restrict ptrace scope
+kernel.yama.ptrace_scope = 2
+
+# Enable NX (No-Execute) protection
+kernel.nx = 1
+
+# Protect against speculative execution vulnerabilities
+kernel.unprivileged_bpf_disabled = 1
+net.core.bpf_jit_harden = 2
+
+# Memory protection
+vm.mmap_min_addr = 65536
+vm.unprivileged_userfaultfd = 0
+
+# Harden BPF JIT compiler
+net.core.bpf_jit_harden = 2
+EOF
+
+  # Apply changes
+  sysctl -p /etc/sysctl.d/90-kernel-hardening.conf
+
+  # Configure PAM to use PAM security modules
+  if ! grep -q "pam_faillock.so" /etc/pam.d/common-auth; then
+    cat > /etc/pam.d/common-auth << EOF
+auth required pam_tally2.so deny=5 unlock_time=900
+auth required pam_faillock.so preauth audit silent deny=5 unlock_time=900
+auth [default=die] pam_faillock.so authfail audit deny=5 unlock_time=900
+auth sufficient pam_faillock.so authsucc audit deny=5 unlock_time=900
+auth required pam_permit.so
+EOF
+  fi
+
+  # Enable and configure Linux Security Modules
+  if ! grep -q "security=apparmor" /etc/default/grub; then
+    sed -i 's/GRUB_CMDLINE_LINUX="/GRUB_CMDLINE_LINUX="security=apparmor apparmor=1 /' /etc/default/grub
+    update-grub
+  fi
+
+  if [[ $VERBOSE == "Y" ]]; then
+    sysctl -a | grep -E "kptr_restrict|dmesg_restrict|randomize_va_space|ptrace_scope"
+    echo
+  fi
+
+  ((SCRIPT_COUNT++))
+}

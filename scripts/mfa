@@ -1,0 +1,37 @@
+function f_mfa_config {
+  echo "[$SCRIPT_COUNT] Configure Google Authenticator for SSH MFA"
+
+  # Install Google Authenticator PAM module
+  apt-get -y install libpam-google-authenticator
+
+  # Configure PAM for SSH to require MFA
+  sed -i '/^@include common-auth/a auth required pam_google_authenticator.so nullok' /etc/pam.d/sshd
+
+  # Update SSHD config to use MFA
+  if ! grep -q "^AuthenticationMethods" "$SSHDFILE"; then
+    echo "AuthenticationMethods publickey,keyboard-interactive" >> "$SSHDFILE"
+    echo "PubkeyAuthentication yes" >> "$SSHDFILE"
+    echo "ChallengeResponseAuthentication yes" >> "$SSHDFILE"
+    echo "KbdInteractiveAuthentication yes" >> "$SSHDFILE"
+    echo "PasswordAuthentication no" >> "$SSHDFILE"  # Disable password-only login
+  fi
+
+  # Create MFA setup instructions
+  cat > /etc/mfa_setup_instructions.txt << EOF
+To enable MFA for your account:
+1. Run: google-authenticator
+2. Answer 'y' to all questions
+3. Save the QR code or secret key
+4. Save the emergency scratch codes safely
+5. Test your login with MFA
+EOF
+
+  systemctl restart sshd
+
+  if [[ $VERBOSE == "Y" ]]; then
+    systemctl status sshd --no-pager
+    echo
+  fi
+
+  ((SCRIPT_COUNT++))
+}

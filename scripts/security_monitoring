@@ -1,0 +1,90 @@
+function f_security_monitoring {
+  echo "[$SCRIPT_COUNT] Configure security monitoring tools"
+
+  # Install essential security monitoring tools
+  apt-get -y install clamav clamav-daemon aide rkhunter chkrootkit lynis auditd ossec-hids
+
+  # Configure ClamAV
+  systemctl stop clamav-freshclam
+  freshclam
+  systemctl start clamav-freshclam
+  systemctl enable clamav-freshclam
+
+  # Configure daily malware scans
+  cat > /etc/cron.daily/malware-scan << EOF
+#!/bin/bash
+/usr/bin/clamscan --recursive --infected / | grep FOUND >> /var/log/clamav/scan.log
+/usr/bin/rkhunter --check --skip-keypress --report-warnings-only
+/usr/sbin/chkrootkit
+EOF
+  chmod +x /etc/cron.daily/malware-scan
+
+  # Configure Lynis weekly audit
+  cat > /etc/cron.weekly/lynis-audit << EOF
+#!/bin/bash
+/usr/sbin/lynis audit system --cronjob > /var/log/lynis-audit.log
+EOF
+  chmod +x /etc/cron.weekly/lynis-audit
+
+  # Configure OSSEC
+  cat > /var/ossec/etc/ossec.conf << EOF
+<ossec_config>
+  <global>
+    <email_notification>yes</email_notification>
+    <email_to>root@localhost</email_to>
+    <smtp_server>localhost</smtp_server>
+    <email_from>ossec@${HOSTNAME}</email_from>
+  </global>
+
+  <syscheck>
+    <frequency>7200</frequency>
+    <directories check_all="yes">/etc,/usr/bin,/usr/sbin,/bin,/sbin</directories>
+    <ignore>/etc/mtab</ignore>
+    <ignore>/etc/hosts.deny</ignore>
+    <ignore>/etc/mail/statistics</ignore>
+    <ignore>/etc/random-seed</ignore>
+    <ignore>/etc/random.seed</ignore>
+    <ignore>/etc/adjtime</ignore>
+    <ignore>/etc/httpd/logs</ignore>
+  </syscheck>
+
+  <rootcheck>
+    <rootkit_files>/var/ossec/etc/shared/rootkit_files.txt</rootkit_files>
+    <rootkit_trojans>/var/ossec/etc/shared/rootkit_trojans.txt</rootkit_trojans>
+    <system_audit>/var/ossec/etc/shared/system_audit_rcl.txt</system_audit>
+    <system_audit>/var/ossec/etc/shared/cis_debian_linux_rcl.txt</system_audit>
+  </rootcheck>
+
+  <alerts>
+    <log_alert_level>1</log_alert_level>
+    <email_alert_level>7</email_alert_level>
+  </alerts>
+</ossec_config>
+EOF
+
+  # Start and enable services
+  systemctl enable --now ossec-hids
+  
+  # Configure file integrity monitoring alerts
+  cat > /etc/aide/aide.conf.d/99-custom-rules << EOF
+/boot/   NORMAL
+/bin/    NORMAL
+/sbin/   NORMAL
+/usr/    NORMAL
+/etc/    NORMAL
+!/var/log/.*
+!/var/spool/.*
+!/var/lib/docker/.*
+EOF
+
+  # Initialize AIDE database
+  aideinit
+
+  if [[ $VERBOSE == "Y" ]]; then
+    systemctl status clamav-freshclam --no-pager
+    systemctl status ossec-hids --no-pager
+    echo
+  fi
+
+  ((SCRIPT_COUNT++))
+}

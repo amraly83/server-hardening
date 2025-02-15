@@ -1,0 +1,116 @@
+function f_container_security {
+  echo "[$SCRIPT_COUNT] Configure container security"
+
+  # Install container security tools
+  apt-get -y install docker.io docker-compose apparmor-utils auditd
+
+  # Create Docker daemon configuration
+  mkdir -p /etc/docker
+  cat > /etc/docker/daemon.json << EOF
+{
+  "live-restore": true,
+  "userland-proxy": false,
+  "no-new-privileges": true,
+  "userns-remap": "default",
+  "log-driver": "json-file",
+  "log-opts": {
+    "max-size": "10m",
+    "max-file": "3"
+  },
+  "default-ulimits": {
+    "nofile": {
+      "Name": "nofile",
+      "Hard": 64000,
+      "Soft": 64000
+    }
+  },
+  "seccomp-profile": "/etc/docker/seccomp-profile.json",
+  "selinux-enabled": true,
+  "icc": false,
+  "default-address-pools": [
+    {
+      "base": "172.20.0.0/16",
+      "size": 24
+    }
+  ]
+}
+EOF
+
+  # Create AppArmor profile for Docker
+  cat > /etc/apparmor.d/docker << EOF
+#include <tunables/global>
+
+profile docker-default flags=(attach_disconnected,mediate_deleted) {
+  #include <abstractions/base>
+  
+  network,
+  capability,
+  file,
+  
+  deny @{PROC}/* w,
+  deny @{PROC}/sys/kernel/sysrq w,
+  deny @{PROC}/sys/kernel/core_pattern w,
+  
+  deny /sys/[^f]*/** wklx,
+  deny /sys/f[^s]*/** wklx,
+  deny /sys/fs/[^c]*/** wklx,
+  deny /sys/fs/c[^g]*/** wklx,
+  deny /sys/fs/cg[^r]*/** wklx,
+  
+  deny /sys/firmware/efi/efivars/** rwklx,
+  deny /sys/kernel/security/** rwklx,
+}
+EOF
+
+  # Load AppArmor profile
+  apparmor_parser -r /etc/apparmor.d/docker
+
+  # Create audit rules for container activities
+  cat > /etc/audit/rules.d/docker.rules << EOF
+-w /usr/bin/docker -k docker
+-w /var/lib/docker -k docker
+-w /etc/docker -k docker
+-w /usr/lib/systemd/system/docker.service -k docker
+-w /etc/default/docker -k docker
+-w /etc/docker/daemon.json -k docker
+-w /usr/bin/docker-compose -k docker
+EOF
+
+  # Reload audit rules
+  auditctl -R /etc/audit/rules.d/docker.rules
+
+  # Create Docker security benchmark script
+  cat > /usr/local/bin/docker-security-check << EOF
+#!/bin/bash
+# Docker Security Benchmark Script
+docker info --format '{{ .SecurityOptions }}'
+docker info --format '{{ .CgroupDriver }}'
+docker info --format '{{ .RootDir }}'
+grep /docker /proc/mounts | grep "nosuid"
+grep /docker /proc/mounts | grep "nodev"
+grep /docker /proc/mounts | grep "noexec"
+EOF
+  chmod +x /usr/local/bin/docker-security-check
+
+  # Add regular security checks to cron
+  echo "0 4 * * * root /usr/local/bin/docker-security-check > /var/log/docker-security.log 2>&1" > /etc/cron.d/docker-security
+
+  # Configure Docker service hardening
+  mkdir -p /etc/systemd/system/docker.service.d
+  cat > /etc/systemd/system/docker.service.d/override.conf << EOF
+[Service]
+ExecStart=
+ExecStart=/usr/bin/dockerd --authorization-plugin=authz-broker --seccomp-profile=/etc/docker/seccomp-profile.json
+EOF
+
+  systemctl daemon-reload
+  systemctl restart docker
+
+  if [[ $VERBOSE == "Y" ]]; then
+    systemctl status docker --no-pager
+    docker info
+    echo
+  fi
+
+  ((SCRIPT_COUNT++))
+}

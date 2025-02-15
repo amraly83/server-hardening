@@ -32,5 +32,135 @@ function f_auditd {
     echo
   fi
 
+  # Install audit reporting tools
+  apt-get -y install auditd audispd-plugins
+
+  # Configure advanced audit settings
+  cat > /etc/audit/auditd.conf << EOF
+log_file = /var/log/audit/audit.log
+log_format = RAW
+log_group = adm
+priority_boost = 4
+flush = INCREMENTAL_ASYNC
+freq = 50
+num_logs = 5
+disp_qos = lossy
+dispatcher = /sbin/audispd
+name_format = HOSTNAME
+max_log_file = 50
+max_log_file_action = ROTATE
+space_left = 75
+space_left_action = EMAIL
+action_mail_acct = root
+admin_space_left = 50
+admin_space_left_action = HALT
+disk_full_action = HALT
+disk_error_action = HALT
+use_libwrap = yes
+tcp_listen_port = 60
+tcp_listen_queue = 5
+tcp_max_per_addr = 1
+tcp_client_max_idle = 0
+enable_krb5 = no
+krb5_principal = auditd
+distribute_network = no
+EOF
+
+  # Add comprehensive audit rules
+  cat > "$AUDITRULES" << EOF
+# First rule - delete all
+-D
+
+# Increase the buffers to survive stress events
+-b 8192
+
+# Monitor all unsuccessful authorization attempts
+-a always,exit -F arch=b64 -S open -F exit=-EACCES -F auid>=1000 -F auid!=-1 -k access
+-a always,exit -F arch=b64 -S open -F exit=-EPERM -F auid>=1000 -F auid!=-1 -k access
+
+# Monitor file system mounts
+-a always,exit -F arch=b64 -S mount -F auid>=1000 -F auid!=-1 -k mounts
+
+# Monitor changes to authentication mechanisms
+-w /etc/pam.d/ -p wa -k auth
+-w /etc/security/ -p wa -k auth
+-w /etc/passwd -p wa -k auth
+-w /etc/shadow -p wa -k auth
+-w /etc/group -p wa -k auth
+-w /etc/gshadow -p wa -k auth
+
+# Monitor privileged command execution
+-a always,exit -F path=/usr/bin/sudo -F perm=x -F auid>=1000 -F auid!=-1 -k privileged
+-a always,exit -F path=/usr/bin/su -F perm=x -F auid>=1000 -F auid!=-1 -k privileged
+
+# Monitor system administration scope changes
+-w /etc/sudoers -p wa -k scope
+-w /etc/sudoers.d/ -p wa -k scope
+
+# Monitor kernel module loading and unloading
+-w /sbin/insmod -p x -k modules
+-w /sbin/rmmod -p x -k modules
+-w /sbin/modprobe -p x -k modules
+
+# Monitor SSH configuration changes
+-w /etc/ssh/sshd_config -p wa -k sshd_config
+
+# Monitor system time changes
+-a always,exit -F arch=b64 -S adjtimex,settimeofday -k time-change
+-a always,exit -F arch=b64 -S clock_settime -k time-change
+-w /etc/localtime -p wa -k time-change
+
+# Monitor network configuration changes
+-w /etc/network/ -p wa -k network
+-w /etc/sysconfig/network -p wa -k network
+
+# Monitor process and session creation
+-w /var/run/utmp -p wa -k session
+-w /var/log/wtmp -p wa -k session
+-w /var/log/btmp -p wa -k session
+
+# Monitor scheduling jobs
+-w /etc/cron.allow -p wa -k cron
+-w /etc/cron.deny -p wa -k cron
+-w /etc/cron.d/ -p wa -k cron
+-w /etc/cron.daily/ -p wa -k cron
+-w /etc/cron.hourly/ -p wa -k cron
+-w /etc/cron.monthly/ -p wa -k cron
+-w /etc/cron.weekly/ -p wa -k cron
+-w /etc/crontab -p wa -k cron
+-w /var/spool/cron/ -p wa -k cron
+
+# Monitor user and group management
+-w /usr/sbin/useradd -p x -k user_modification
+-w /usr/sbin/userdel -p x -k user_modification
+-w /usr/sbin/usermod -p x -k user_modification
+-w /usr/sbin/groupadd -p x -k group_modification
+-w /usr/sbin/groupdel -p x -k group_modification
+-w /usr/sbin/groupmod -p x -k group_modification
+
+# Make the configuration immutable
+-e 2
+EOF
+
+  # Configure audit dispatcher for real-time alerts
+  cat > /etc/audisp/plugins.d/syslog.conf << EOF
+active = yes
+direction = out
+path = /sbin/audisp-syslog
+type = always
+args = LOG_INFO
+format = string
+EOF
+
+  # Enable and start the service
+  systemctl enable auditd.service
+  service auditd restart
+
+  if [[ $VERBOSE == "Y" ]]; then
+    auditctl -l
+    systemctl status auditd.service --no-pager
+    echo
+  fi
+
   ((SCRIPT_COUNT++))
 }

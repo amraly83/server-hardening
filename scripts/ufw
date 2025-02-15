@@ -21,11 +21,10 @@ function f_firewall {
   ufw logging on
 
   ufw default deny incoming
-
-  for admin in $FW_ADMIN; do
-    ufw allow log from "$admin" to any port "$SSH_PORT" proto tcp
-  done
-
+  
+  # Use rate limiting for SSH instead of IP restrictions to allow access from anywhere
+  ufw limit $SSH_PORT/tcp comment 'SSH with rate limiting'
+  
   ufw --force enable
 
   if [[ $VERBOSE == "Y" ]]; then

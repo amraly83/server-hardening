@@ -1,20 +1,132 @@
 function f_journalctl {
-  echo "[$SCRIPT_COUNT] Systemd/journald.conf and logrotate.conf"
+  echo "[$SCRIPT_COUNT] Configure enhanced logging and monitoring"
 
-  cp "$LOGROTATE_CONF" "$LOGROTATE"
+  # Install additional logging tools
+  apt-get -y install rsyslog-gnutls logwatch
 
+  # Enhanced journald configuration
   sed -i 's/^#Storage=.*/Storage=persistent/' "$JOURNALDCONF"
   sed -i 's/^#ForwardToSyslog=.*/ForwardToSyslog=yes/' "$JOURNALDCONF"
   sed -i 's/^#Compress=.*/Compress=yes/' "$JOURNALDCONF"
+  sed -i 's/^#SystemMaxUse=.*/SystemMaxUse=8G/' "$JOURNALDCONF"
+  sed -i 's/^#SystemMaxFileSize=.*/SystemMaxFileSize=256M/' "$JOURNALDCONF"
+  sed -i 's/^#ForwardToWall=.*/ForwardToWall=no/' "$JOURNALDCONF"
+  sed -i 's/^#MaxFileSec=.*/MaxFileSec=30day/' "$JOURNALDCONF"
+
+  # Configure secure rsyslog
+  cat > "$RSYSLOGCONF" << EOF
+# Modern rsyslog configuration
+module(load="imuxsock")
+module(load="imjournal")
+module(load="imklog")
+
+# Security-enhanced logging
+\$FileCreateMode 0600
+\$DirCreateMode 0700
+\$Umask 0077
+
+# Enable disk queue for security
+\$WorkDirectory /var/spool/rsyslog
+\$ActionQueueFileName fwdRule1
+\$ActionQueueMaxDiskSpace 1g
+\$ActionQueueSaveOnShutdown on
+\$ActionQueueType LinkedList
+\$ActionResumeRetryCount -1
+
+# Log security events
+if \$programname == 'sudo' then /var/log/sudo.log
+& stop
+if \$programname contains 'sshd' then /var/log/ssh.log
+& stop
+if \$programname contains 'fail2ban' then /var/log/fail2ban.log
+& stop
+if \$programname contains 'auditd' then /var/log/audit-remote.log
+& stop
+
+# Remote logging (uncomment and configure for production)
+#*.* @@remote-host:514
+
+# Default rules
+*.info;mail.none;authpriv.none;cron.none    /var/log/messages
+authpriv.*                                   /var/log/secure
+mail.*                                       /var/log/maillog
+cron.*                                       /var/log/cron
+*.emerg                                      :omusrmsg:*
+EOF
+
+  # Configure logrotate with enhanced security
+  cat > "$LOGROTATE" << EOF
+# Secure logrotate configuration
+compress
+compresscmd /usr/bin/xz
+compressext .xz
+dateext
+notifempty
+missingok
+sharedscripts
+create 0600 root root
+
+/var/log/syslog
+/var/log/mail.info
+/var/log/mail.warn
+/var/log/mail.err
+/var/log/mail.log
+/var/log/daemon.log
+/var/log/kern.log
+/var/log/auth.log
+/var/log/user.log
+/var/log/lpr.log
+/var/log/cron.log
+/var/log/debug
+/var/log/messages
+{
+    rotate 14
+    daily
+    compress
+    delaycompress
+    notifempty
+    sharedscripts
+    postrotate
+        /usr/lib/rsyslog/rsyslog-rotate
+    endscript
+}
+
+/var/log/fail2ban.log
+/var/log/ssh.log
+/var/log/sudo.log
+/var/log/audit-remote.log
+{
+    rotate 30
+    daily
+    compress
+    delaycompress
+    notifempty
+    create 0600 root root
+    sharedscripts
+    postrotate
+        /usr/lib/rsyslog/rsyslog-rotate
+    endscript
+}
+EOF
+
+  # Create log monitoring script
+  cat > /usr/local/bin/security-log-monitor << EOF
+#!/bin/bash
+# Monitor important security events
+journalctl -p err..emerg --since "1 hour ago" | grep -E "authentication|failure|error|denied|refused|invalid|attack|compromise" > /var/log/security-alerts.log
+grep -E "authentication failure|failed password|invalid user|break-in attempt" /var/log/auth.log >> /var/log/security-alerts.log
+EOF
+  chmod +x /usr/local/bin/security-log-monitor
+
+  # Add to cron
+  echo "*/10 * * * * root /usr/local/bin/security-log-monitor" > /etc/cron.d/security-monitor
 
   systemctl restart systemd-journald
-
-  if [ -w "$RSYSLOGCONF" ]; then
-    sed -i "s/^\$FileCreateMode.*/\$FileCreateMode 0600/g" "$RSYSLOGCONF"
-  fi
+  systemctl restart rsyslog
 
   if [[ $VERBOSE == "Y" ]]; then
     systemctl status systemd-journald --no-pager
+    systemctl status rsyslog --no-pager
     echo
   fi
 

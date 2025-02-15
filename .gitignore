@@ -6,3 +6,23 @@
 .sonar
 TESTRESULTS.adoc
 tests/*.adoc
+
+# Log files
+*.log
+
+# System files
+.DS_Store
+Thumbs.db
+
+# Temp files
+*.tmp
+*~
+
+# Local config backups
+*.bak
+*.backup
+*.old
+
+# IDE files
+.vscode/
+.idea/

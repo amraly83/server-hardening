@@ -36,3 +36,37 @@ function f_pre {
     exit 1
   fi
 }
+
+function f_create_admin_user {
+  echo "Creating administrative user before hardening"
+  
+  # Verify variables are set in ubuntu.cfg
+  if [[ -z "$ADMIN_USER" ]] || [[ -z "$ADMIN_PASSWORD" ]]; then
+    echo "Error: ADMIN_USER and ADMIN_PASSWORD must be set in ubuntu.cfg"
+    exit 1
+  fi
+  
+  # Create new admin user
+  useradd -m -s /bin/bash "$ADMIN_USER"
+  # Set password for new user
+  echo "$ADMIN_USER:$ADMIN_PASSWORD" | chpasswd
+  
+  # Add user to sudo group
+  usermod -aG sudo "$ADMIN_USER"
+  
+  # Verify sudo access
+  if groups "$ADMIN_USER" | grep -q "\bsudo\b"; then
+    echo "User $ADMIN_USER successfully added to sudo group"
+  else
+    echo "Failed to add $ADMIN_USER to sudo group"
+    exit 1
+  fi
+  
+  # Test sudo access
+  su - "$ADMIN_USER" -c "sudo -l" || {
+    echo "Failed to verify sudo access for $ADMIN_USER"
+    exit 1
+  }
+  
+  echo "Administrative user setup complete"
+}

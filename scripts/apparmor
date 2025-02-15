@@ -18,8 +18,62 @@ function f_aa_enforce {
 
   find /etc/apparmor.d/ -maxdepth 1 -type f -exec aa-enforce {} \;
 
+  # Install additional AppArmor utilities
+  apt-get -y install apparmor-utils apparmor-profiles-extra
+
+  # Enable more restrictive profiles
+  aa-update-browser-profiles
+  
+  # Create custom profile for SSH
+  cat > /etc/apparmor.d/usr.sbin.sshd << EOF
+#include <tunables/global>
+
+/usr/sbin/sshd flags=(attach_disconnected) {
+  #include <abstractions/base>
+  #include <abstractions/nameservice>
+  #include <abstractions/authentication>
+  #include <abstractions/openssl>
+
+  capability sys_chroot,
+  capability sys_resource,
+  capability sys_tty_config,
+  capability net_bind_service,
+  capability chown,
+  capability fowner,
+  capability kill,
+  capability setgid,
+  capability setuid,
+  capability audit_write,
+  capability dac_override,
+  
+  network inet stream,
+  network inet6 stream,
+  
+  /usr/sbin/sshd mr,
+  /etc/ssh/** r,
+  /etc/ssh/sshd_config r,
+  /var/log/auth.log w,
+  /var/log/syslog w,
+  
+  @{HOME}/.ssh/** r,
+  
+  deny /etc/shadow mrwkl,
+  deny /etc/gshadow mrwkl,
+EOF
+
+  # Reload and enforce all profiles
+  systemctl reload apparmor
+  aa-enforce /etc/apparmor.d/*
+  
+  # Enable process logging for AppArmor
+  if ! grep -q "audit_mode=1" /etc/apparmor/parser.conf; then
+    echo "audit_mode=1" >> /etc/apparmor/parser.conf
+  fi
+
   if [[ $VERBOSE == "Y" ]]; then
     systemctl status apparmor.service --no-pager
+    aa-status
+    apparmor_status
     echo
   fi
 

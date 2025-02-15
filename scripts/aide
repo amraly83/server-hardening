@@ -1,15 +1,118 @@
 function f_aide {
-  echo "[$SCRIPT_COUNT] Aide configuration"
+  echo "[$SCRIPT_COUNT] Configure enhanced file integrity monitoring"
 
-  if ! grep -R -E '^!/var/lib/lxcfs/cgroup$' /etc/aide/*; then
-    echo '!/var/lib/lxcfs/cgroup' > /etc/aide/aide.conf.d/70_aide_lxcfs
-  fi
+  # Install required packages
+  apt-get -y install aide aide-common
 
-  if ! grep -R -E '^!/var/lib/docker$' /etc/aide/*; then
-    echo '!/var/lib/docker' > /etc/aide/aide.conf.d/70_aide_docker
-  fi
+  # Create comprehensive AIDE configuration
+  cat > /etc/aide/aide.conf << EOF
+# AIDE configuration with modern security requirements
+database=file:/var/lib/aide/aide.db
+database_out=file:/var/lib/aide/aide.db.new
+database_new=file:/var/lib/aide/aide.db.new
+gzip_dbout=yes
 
-  sed -i 's/^Checksums.*/Checksums = sha512/' /etc/aide/aide.conf
+# Modern hash algorithms
+Checksums = sha512+sha256+rmd160+haval256
+
+# Define monitoring rules
+VarFile = OwnerMode+n+l+X+md5+sha256+sha512
+VarDir = OwnerMode+n+l+X
+VarDirTime = OwnerMode+n+l+X+SerialNo
+VarInode = OwnerMode+n+l+X+SerialNo+i
+ConfFile = OwnerMode+n+l+X+md5+sha256+sha512
+LogFile = OwnerMode+n+l+X+pin+iar+sha256+sha512
+Binaries = OwnerMode+n+l+X+md5+sha256+sha512+b
+Libraries = OwnerMode+n+l+X+md5+sha256+sha512+b
+StaticDir = OwnerMode+n+l+X
+ManPages = OwnerMode+n+l+X+md5+sha256+sha512
+SigFiles = OwnerMode+n+l+X+md5+sha256+sha512
+DocFiles = OwnerMode+n+l+X+txt+md5+sha256+sha512
+
+# Critical system files
+/boot   Binaries
+/bin    Binaries
+/sbin   Binaries
+/usr/bin Binaries
+/usr/sbin Binaries
+/etc    ConfFile
+/lib    Libraries
+/lib64  Libraries
+/usr/lib Libraries
+/usr/lib64 Libraries
+
+# Security-related directories
+/etc/security ConfFile
+/etc/ssh ConfFile
+/etc/pam.d ConfFile
+/etc/audit ConfFile
+/etc/systemd/system ConfFile
+
+# Exclude dynamic directories
+!/var/log/.*
+!/var/spool/.*
+!/var/lib/docker/.*
+!/var/lib/lxcfs/cgroup
+!/proc
+!/sys
+!/dev
+!/run
+!/tmp
+EOF
+
+  # Create AIDE check script with reporting
+  cat > /usr/local/bin/aide-check << 'EOF'
+#!/bin/bash
+LOG_FILE="/var/log/aide/aide-$(date +%Y%m%d-%H%M%S).log"
+REPORT_FILE="/var/log/aide/aide-report.txt"
+mkdir -p /var/log/aide
+
+# Run AIDE check
+aide --check > "$LOG_FILE" 2>&1
+
+if [ $? -ne 0 ]; then
+    echo "AIDE detected changes on $(date)" > "$REPORT_FILE"
+    echo "----------------------------------------" >> "$REPORT_FILE"
+    grep -E "changed|added|removed" "$LOG_FILE" >> "$REPORT_FILE"
+    
+    # Send alert if major changes detected
+    if grep -qE "bin|sbin|lib|etc/ssh|etc/pam.d" "$LOG_FILE"; then
+        echo "CRITICAL: System binary or configuration changes detected!" >> "$REPORT_FILE"
+        wall "SECURITY ALERT: Critical system changes detected by AIDE!"
+    fi
+
+    # Integration with fail2ban
+    if [ -f /var/run/fail2ban/fail2ban.sock ]; then
+        fail2ban-client set aide-security banip 127.0.0.1
+    fi
+fi
+
+# Rotate old reports
+find /var/log/aide -name "aide-*.log" -mtime +30 -delete
+EOF
+  chmod +x /usr/local/bin/aide-check
+
+  # Create fail2ban configuration for AIDE
+  cat > /etc/fail2ban/jail.d/aide.conf << EOF
+[aide-security]
+enabled = true
+filter = aide
+action = iptables-allports[name=AIDE]
+logpath = /var/log/aide/aide-report.txt
+maxretry = 1
+findtime = 300
+bantime = 86400
+EOF
+
+  cat > /etc/fail2ban/filter.d/aide.conf << EOF
+[Definition]
+failregex = ^CRITICAL: System binary or configuration changes detected!$
+ignoreregex =
+EOF
+
+  # Initialize AIDE database
+  aide --init
+  cp /var/lib/aide/aide.db.new /var/lib/aide/aide.db
 
   ((SCRIPT_COUNT++))
 }
@@ -23,22 +126,44 @@ function f_aide_post {
 }
 
 function f_aide_timer {
-  if ! [ -f /etc/cron.daily/aide ]; then
-    echo "[$SCRIPT_COUNT] Enable daily Aide check"
+  echo "[$SCRIPT_COUNT] Configure AIDE automated checks"
 
-    cp ./config/aidecheck.service /etc/systemd/system/aidecheck.service
-    cp ./config/aidecheck.timer /etc/systemd/system/aidecheck.timer
-    chmod 0644 /etc/systemd/system/aidecheck.*
+  # Create systemd timer for more frequent checks
+  cat > /etc/systemd/system/aidecheck.service << EOF
+[Unit]
+Description=AIDE Check and Report
+After=network.target
 
-    systemctl reenable aidecheck.timer
-    systemctl restart aidecheck.timer
-    systemctl daemon-reload
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/aide-check
+Nice=19
+IOSchedulingClass=idle
+EOF
 
-    if [[ $VERBOSE == "Y" ]]; then
-      systemctl status aidecheck.timer --no-pager
-      echo
-    fi
+  cat > /etc/systemd/system/aidecheck.timer << EOF
+[Unit]
+Description=Daily AIDE Check
 
-    ((SCRIPT_COUNT++))
+[Timer]
+OnCalendar=*:0/4
+RandomizedDelaySec=60
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+
+  chmod 0644 /etc/systemd/system/aidecheck.*
+  
+  systemctl daemon-reload
+  systemctl enable aidecheck.timer
+  systemctl start aidecheck.timer
+
+  if [[ $VERBOSE == "Y" ]]; then
+    systemctl status aidecheck.timer --no-pager
+    echo
   fi
+
+  ((SCRIPT_COUNT++))
 }

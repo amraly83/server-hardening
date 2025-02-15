@@ -1,5 +1,8 @@
 function f_psad {
-  echo "[$SCRIPT_COUNT] Enable psad"
+  echo "[$SCRIPT_COUNT] Configure modern IDS with PSAD"
+
+  # Install required packages
+  apt-get -y install psad fwsnort
 
   if ! test -f "$PSADCONF"; then
     echo "$PSADCONF does not exist."
@@ -30,6 +33,54 @@ function f_psad {
   sed -i 's/IPT_SYSLOG_FILE             \/var\/log\/messages;/IPT_SYSLOG_FILE             \/var\/log\/syslog;/' "$PSADCONF"
   sed -i 's/SIG_UPDATE_URL              http:\/\/www.cipherdyne.org\/psad\/signatures;/SIG_UPDATE_URL              https:\/\/www.cipherdyne.org\/psad\/signatures;/'  "$PSADCONF"
 
+  # Enhanced PSAD configuration for modern threats
+  sed -i 's/SCAN_TIMEOUT                600;/SCAN_TIMEOUT                300;/' "$PSADCONF"
+  sed -i 's/MAX_SCAN_IP_PAIRS           1000;/MAX_SCAN_IP_PAIRS           5000;/' "$PSADCONF"
+  sed -i 's/ENABLE_DSHIELD_ALERTS       N;/ENABLE_DSHIELD_ALERTS       Y;/' "$PSADCONF"
+  sed -i 's/ENABLE_SNORT_SIG_MATCH      N;/ENABLE_SNORT_SIG_MATCH      Y;/' "$PSADCONF"
+  sed -i 's/ENABLE_SPI                  N;/ENABLE_SPI                  Y;/' "$PSADCONF"
+  sed -i 's/ENABLE_BLK_RESP             N;/ENABLE_BLK_RESP             Y;/' "$PSADCONF"
+  
+  # Add integration with Fail2ban
+  cat >> "$PSADCONF" << EOF
+### Enhanced detection rules
+ENABLE_EXT_SCRIPT_EXEC      Y;
+EXT_SCRIPT_PATH            /usr/local/sbin/psad-response.sh;
+EOF
+
+  # Create custom response script
+  cat > /usr/local/sbin/psad-response.sh << 'EOF'
+#!/bin/bash
+IP=$1
+DANGER_LEVEL=$2
+
+if [ "$DANGER_LEVEL" -ge 3 ]; then
+    fail2ban-client set psad banip $IP
+    logger -t psad-response "Banned IP $IP due to danger level $DANGER_LEVEL"
+fi
+EOF
+  chmod +x /usr/local/sbin/psad-response.sh
+
+  # Create Fail2ban PSAD jail
+  cat > /etc/fail2ban/jail.d/psad.conf << EOF
+[psad]
+enabled = true
+filter = psad
+action = iptables-multiport[name=psad]
+logpath = /var/log/psad/psad.log
+maxretry = 1
+findtime = 3600
+bantime = 86400
+EOF
+
+  # Create Fail2ban PSAD filter
+  cat > /etc/fail2ban/filter.d/psad.conf << EOF
+[Definition]
+failregex = DL: (?:<%{DANGER_LEVEL}>|[3-5]) from <HOST>
+ignoreregex =
+EOF
+
+  systemctl restart fail2ban
   psad --sig-update
   psad -H
   psad --fw-analyze
@@ -37,6 +88,7 @@ function f_psad {
   if [[ $VERBOSE == "Y" ]]; then
     systemctl status psad.service --no-pager
     psad -S
+    fail2ban-client status psad
     echo
   fi
 

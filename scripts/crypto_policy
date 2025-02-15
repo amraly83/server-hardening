@@ -1,0 +1,52 @@
+function f_crypto_policy {
+  echo "[$SCRIPT_COUNT] Configure system-wide cryptographic policies"
+
+  # Install crypto policy package
+  apt-get -y install crypto-policies-scripts
+
+  # Create custom cryptographic policy
+  cat > /etc/crypto-policies/policies/HARDENED.pol << EOF
+# Key exchange algorithms
+ssh_group = ffdhe4096,ecdh-sha2-nistp384,ecdh-sha2-nistp521
+ssh_hostkey = rsa-sha2-512,ecdsa-sha2-nistp384,ecdsa-sha2-nistp521
+ssh_publickey = rsa-sha2-512,ecdsa-sha2-nistp384,ecdsa-sha2-nistp521
+
+# Ciphers
+cipher = AEAD
+ssh_cipher = aes256-gcm@openssh.com,chacha20-poly1305@openssh.com,aes256-ctr
+
+# MACs
+ssh_mac = hmac-sha2-512-etm@openssh.com,hmac-sha2-256-etm@openssh.com
+
+# TLS configuration
+min_tls_version = TLS1.2
+min_dtls_version = DTLS1.2
+tls_cipher = ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:DHE-RSA-AES256-GCM-SHA384
+tls_curve = secp384r1:secp521r1
+tls_signature = ECDSA+SHA384:ECDSA+SHA512:RSA-PSS+SHA384:RSA-PSS+SHA512
+EOF
+
+  # Set system-wide policy
+  update-crypto-policies --set HARDENED
+
+  # Configure OpenSSL security level
+  if ! grep -q "OPENSSL_SECURITY_LEVEL" /etc/environment; then
+    echo "OPENSSL_SECURITY_LEVEL=2" >> /etc/environment
+  fi
+
+  # Update SSH configuration to use strong algorithms
+  if ! grep -q "^Ciphers" "$SSHDFILE"; then
+    echo "Ciphers aes256-gcm@openssh.com,chacha20-poly1305@openssh.com,aes256-ctr" >> "$SSHDFILE"
+    echo "KexAlgorithms curve25519-sha256@libssh.org,ecdh-sha2-nistp521,ecdh-sha2-nistp384" >> "$SSHDFILE"
+    echo "MACs hmac-sha2-512-etm@openssh.com,hmac-sha2-256-etm@openssh.com" >> "$SSHDFILE"
+  fi
+
+  systemctl restart sshd
+
+  if [[ $VERBOSE == "Y" ]]; then
+    update-crypto-policies --show
+    echo
+  fi
+
+  ((SCRIPT_COUNT++))
+}

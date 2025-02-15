@@ -16,6 +16,9 @@ if ! [ -x "$(command -v systemctl)" ]; then
   exit 1
 fi
 
+# Source configurations
+source ./config/initpath.sh
+
 function main {
   clear
 
@@ -129,6 +132,10 @@ function main {
 
     source "$s"
   done
+
+  # Create admin user first
+  source ./scripts/pre
+  f_create_admin_user
 
   f_pre
   f_kernel

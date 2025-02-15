@@ -1,16 +1,76 @@
 function f_usbguard {
-  echo "[$SCRIPT_COUNT] Enable usbguard"
+  echo "[$SCRIPT_COUNT] Configure enhanced USB security"
 
-  $APT install --no-install-recommends usbguard
+  # Install required packages
+  apt-get -y install usbguard usbutils auditd
 
-  usbguard generate-policy > /tmp/rules.conf
+  # Create comprehensive USBGuard configuration
+  cat > /etc/usbguard/usbguard-daemon.conf << EOF
+RuleFile=/etc/usbguard/rules.conf
+ImplicitPolicyTarget=block
+PresentDevicePolicy=apply-policy
+PresentControllerPolicy=apply-policy
+InsertedDevicePolicy=apply-policy
+RestoreControllerDeviceState=false
+DeviceManagerBackend=uevent
+IPCAllowedUsers=root
+IPCAllowedGroups=
+IPCAccessControlFiles=/etc/usbguard/IPCAccessControl.d/
+DeviceRulesWithPort=true
+AuditBackend=LinuxAudit
+AuditFilePath=/var/log/usbguard/usbguard-audit.log
+EOF
+
+  # Generate strict baseline policy
+  usbguard generate-policy -X > /tmp/rules.conf
   install -m 0600 -o root -g root /tmp/rules.conf /etc/usbguard/rules.conf
 
-  systemctl enable usbguard.service
-  systemctl start usbguard.service
+  # Create audit rules for USB events
+  cat > /etc/audit/rules.d/90-usb.rules << EOF
+-a always,exit -F arch=b64 -S mount -F auid>=1000 -F auid!=4294967295 -k usb_mount
+-w /dev/sd* -p war -k usb_storage
+-w /etc/usbguard/rules.conf -p wa -k usbguard_conf
+EOF
+
+  # Create USB monitoring script
+  cat > /usr/local/bin/usb-monitor << EOF
+#!/bin/bash
+LOG_DIR="/var/log/usbguard"
+mkdir -p "\$LOG_DIR"
+
+# Monitor USB events
+inotifywait -m /dev -e create -e delete 2>/dev/null | while read path action file; do
+    if [[ \$file == sd* ]]; then
+        echo "[$(date)] USB Event: \$action \$file" >> "\$LOG_DIR/usb-events.log"
+        wall "USB Security Alert: \$action event detected for device \$file"
+    fi
+done
+EOF
+  chmod +x /usr/local/bin/usb-monitor
+
+  # Create systemd service for USB monitoring
+  cat > /etc/systemd/system/usb-monitor.service << EOF
+[Unit]
+Description=USB Device Monitoring Service
+After=usbguard.service
+
+[Service]
+ExecStart=/usr/local/bin/usb-monitor
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+  # Enable and start services
+  systemctl daemon-reload
+  systemctl enable usbguard.service usb-monitor.service
+  systemctl start usbguard.service usb-monitor.service
 
   if [[ $VERBOSE == "Y" ]]; then
+    usbguard list-devices
     systemctl status usbguard.service --no-pager
+    systemctl status usb-monitor.service --no-pager
     echo
   fi
 

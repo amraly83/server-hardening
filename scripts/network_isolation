@@ -1,0 +1,168 @@
+function f_network_isolation {
+  echo "[$SCRIPT_COUNT] Configure network isolation and segmentation"
+
+  # Install required packages
+  apt-get -y install nftables netfilter-persistent bridge-utils vlan
+
+  # Configure nftables with modern ruleset
+  cat > /etc/nftables.conf << EOF
+#!/usr/sbin/nftables-nft -f
+
+flush ruleset
+
+table inet filter {
+    chain input {
+        type filter hook input priority 0; policy drop;
+        
+        # Allow established/related connections
+        ct state established,related accept
+        
+        # Allow loopback
+        iif lo accept
+        
+        # Anti-spoofing
+        iif != lo ip saddr 127.0.0.0/8 drop
+        iif != lo ip6 saddr ::1 drop
+        
+        # ICMP and ICMPv6 restrictions
+        ip protocol icmp icmp type { echo-request, destination-unreachable, time-exceeded } limit rate 10/second accept
+        ip6 nexthdr icmpv6 icmpv6 type { echo-request, destination-unreachable, time-exceeded, parameter-problem, packet-too-big } limit rate 10/second accept
+        
+        # SSH with rate limiting
+        tcp dport $SSH_PORT ct state new limit rate 10/minute accept
+        
+        # Drop invalid packets
+        ct state invalid drop
+        
+        # Log and drop everything else
+        log prefix "[NFT] Input Denied: " counter drop
+    }
+
+    chain forward {
+        type filter hook forward priority 0; policy drop;
+        
+        # Allow established/related connections
+        ct state established,related accept
+        
+        # Drop invalid packets
+        ct state invalid drop
+        
+        # Log and drop everything else
+        log prefix "[NFT] Forward Denied: " counter drop
+    }
+
+    chain output {
+        type filter hook output priority 0; policy accept;
+        
+        # Basic output filtering
+        ct state invalid drop
+    }
+}
+
+# Network segmentation table
+table ip nat {
+    chain prerouting {
+        type nat hook prerouting priority 0;
+    }
+
+    chain postrouting {
+        type nat hook postrouting priority 100;
+        
+        # Masquerade only specific networks if needed
+        # masquerade to "eth0"
+    }
+}
+EOF
+
+  # Enable and start nftables
+  systemctl enable nftables
+  systemctl start nftables
+
+  # Configure network namespaces for isolation
+  cat > /etc/netns-setup.sh << EOF
+#!/bin/bash
+
+# Create isolated network namespaces for different services
+ip netns add webserver
+ip netns add database
+ip netns add monitoring
+
+# Create virtual interfaces
+ip link add veth-web type veth peer name veth-web-ns
+ip link add veth-db type veth peer name veth-db-ns
+ip link add veth-mon type veth peer name veth-mon-ns
+
+# Connect interfaces to namespaces
+ip link set veth-web-ns netns webserver
+ip link set veth-db-ns netns database
+ip link set veth-mon-ns netns monitoring
+
+# Configure interfaces
+ip netns exec webserver ip addr add 10.0.1.2/24 dev veth-web-ns
+ip netns exec database ip addr add 10.0.2.2/24 dev veth-db-ns
+ip netns exec monitoring ip addr add 10.0.3.2/24 dev veth-mon-ns
+
+# Bring up interfaces
+ip netns exec webserver ip link set veth-web-ns up
+ip netns exec database ip link set veth-db-ns up
+ip netns exec monitoring ip link set veth-mon-ns up
+EOF
+  chmod +x /etc/netns-setup.sh
+
+  # Create network monitoring configuration
+  cat > /etc/sysctl.d/90-network-security.conf << EOF
+# Network security parameters
+net.ipv4.conf.all.log_martians = 1
+net.ipv4.conf.default.log_martians = 1
+net.ipv4.conf.all.rp_filter = 1
+net.ipv4.conf.default.rp_filter = 1
+net.ipv4.conf.all.accept_redirects = 0
+net.ipv4.conf.default.accept_redirects = 0
+net.ipv4.conf.all.secure_redirects = 0
+net.ipv4.conf.default.secure_redirects = 0
+net.ipv6.conf.all.accept_redirects = 0
+net.ipv6.conf.default.accept_redirects = 0
+net.ipv4.conf.all.send_redirects = 0
+net.ipv4.conf.default.send_redirects = 0
+net.ipv4.icmp_echo_ignore_all = 1
+net.ipv6.conf.all.accept_ra = 0
+net.ipv6.conf.default.accept_ra = 0
+EOF
+
+  # Apply sysctl settings
+  sysctl -p /etc/sysctl.d/90-network-security.conf
+
+  # Setup network monitoring
+  if command -v tcpdump &> /dev/null; then
+    cat > /etc/systemd/system/network-monitor.service << EOF
+[Unit]
+Description=Network Traffic Monitoring
+After=network.target
+
+[Service]
+ExecStart=/usr/sbin/tcpdump -i any -w /var/log/network/capture.pcap -C 100 -W 5 not port $SSH_PORT
+WorkingDirectory=/var/log/network
+StandardOutput=syslog
+StandardError=syslog
+User=root
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    mkdir -p /var/log/network
+    chmod 700 /var/log/network
+    systemctl daemon-reload
+    systemctl enable network-monitor
+    systemctl start network-monitor
+  fi
+
+  if [[ $VERBOSE == "Y" ]]; then
+    nft list ruleset
+    ip netns list
+    systectl status nftables --no-pager
+    echo
+  fi
+
+  ((SCRIPT_COUNT++))
+}
