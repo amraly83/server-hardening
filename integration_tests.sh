@@ -39,7 +39,7 @@ run_integration_tests() {
         if ! ufw status | grep -q "Default:.*deny.*incoming"; then
             echo "FAIL: Firewall default deny policy not set"
             test_status=1
-        }
+        fi
     }
     
     # Test PAM Configuration

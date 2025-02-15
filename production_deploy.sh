@@ -2,6 +2,13 @@
 
 set -euo pipefail
 
+# Source all script functions
+for script in ./scripts/*; do
+    if [[ -f "$script" ]]; then
+        source "$script"
+    fi
+done
+
 # Color codes for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -46,6 +53,12 @@ validate_config() {
 # Pre-deployment checks
 pre_deployment_check() {
     log "Running pre-deployment checks..."
+    
+    # Install required packages
+    if ! command -v jq &> /dev/null; then
+        log "Installing required package: jq"
+        apt-get update && apt-get install -y jq
+    fi
     
     # Check system requirements
     if ! command -v systemctl &> /dev/null; then
@@ -125,7 +138,7 @@ deploy_hardening() {
         log "Deploying component: $name"
         if ! track_deployment "$name" "$func"; then
             warn "Component $name failed"
-            if [ "$name" in "ssh" "auth" "network" ]; then
+            if [[ "$name" == "ssh" ]] || [[ "$name" == "auth" ]] || [[ "$name" == "network" ]]; then
                 error "Critical component failed, aborting deployment"
             fi
         fi
@@ -179,6 +192,16 @@ main() {
         error "Configuration file ubuntu.cfg not found"
     fi
     source ./ubuntu.cfg
+    
+    # Source all script functions first
+    for script in ./scripts/*; do
+        if [[ -f "$script" ]]; then
+            source "$script"
+        fi
+    done
+    
+    # Source state management after functions
+    source ./deployment_state.sh
     
     # Verify system state before proceeding
     if [ "$(get_status)" = "in_progress" ]; then
