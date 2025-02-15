@@ -2,7 +2,15 @@
 
 set -euo pipefail
 
+# Source configuration
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/ubuntu.cfg"
+
+# Setup logging
 LOGFILE="integration-tests-$(date +%Y%m%d_%H%M%S).log"
+
+# Ensure required variables are set
+: "${SSH_PORT:=22}"
 
 # Integration test suite
 run_integration_tests() {
