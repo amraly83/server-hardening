@@ -1,10 +1,8 @@
 #!/bin/bash
 
-# Add workspace directory to PATH and set base directory
+# DO NOT modify PATH here, let initpath.sh handle it
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BASE_DIR="$(dirname "$SCRIPT_DIR")"
-PATH="$BASE_DIR:$SCRIPT_DIR:$PATH"
-export PATH
 
 set -euo pipefail
 
@@ -14,18 +12,20 @@ YELLOW='\033[1;33m'
 RED='\033[0;31m'
 NC='\033[0m'
 
-# Set up logging
+# Set up logging with cleaner debug output
 setup_logging() {
     local log_dir="/var/log/hardening"
     mkdir -p "$log_dir"
     LOGFILE="$log_dir/deployment-$(hostname --short)-$(date +%y%m%d).log"
     DEBUG_LOG="$log_dir/debug-$(hostname --short)-$(date +%y%m%d).log"
     
-    # Redirect all output to both console and log file
+    # Configure debug output format
+    export PS4='+(${BASH_SOURCE}:${LINENO}): ${FUNCNAME[0]:+${FUNCNAME[0]}(): }'
+    
+    # Redirect output while preserving debug format
     exec 1> >(tee -a "$LOGFILE")
     exec 2> >(tee -a "$LOGFILE" >&2)
     
-    # Start debug logging
     echo "=== Debug Log Started $(date) ===" > "$DEBUG_LOG"
     set -x
 }
@@ -43,18 +43,23 @@ error() {
     exit 1
 }
 
-# Set up logging first
-setup_logging
-
 # Initialize script environment
 init_environment() {
     log "Initializing environment..."
     
-    # Set required environment variables
+    # Source base configuration first
+    if [ ! -f "$BASE_DIR/ubuntu.cfg" ]; then
+        cp "$BASE_DIR/ubuntu.cfg.example" "$BASE_DIR/ubuntu.cfg"
+        error "ubuntu.cfg not found. Created from example. Please configure it first."
+    fi
+    
+    # Source configs in correct order
+    source "$BASE_DIR/ubuntu.cfg"
+    source "$BASE_DIR/config/initpath.sh"
+    
+    # Now set environment variables after paths are configured
     export DEBIAN_FRONTEND=noninteractive
     export SCRIPT_COUNT=0
-    export BASE_DIR
-    export SCRIPT_DIR
     
     # Create required directories
     local dirs=(
@@ -70,18 +75,10 @@ init_environment() {
         chmod 750 "$dir"
     done
     
-    # Initialize logging
-    LOGFILE="/var/log/hardening/deployment-$(hostname --short)-$(date +%y%m%d).log"
-    export LOGFILE
-    
-    # Source base configuration with absolute path
-    if [ ! -f "$BASE_DIR/ubuntu.cfg" ]; then
-        cp "$BASE_DIR/ubuntu.cfg.example" "$BASE_DIR/ubuntu.cfg"
-        error "ubuntu.cfg not found. Created from example. Please configure it first."
-    fi
-    
-    source "$BASE_DIR/ubuntu.cfg"
-    source "$BASE_DIR/config/initpath.sh"
+    # Install dependencies after paths are set
+    log "Installing required packages..."
+    apt-get update
+    apt-get install -y jq net-tools mailutils file
     
     # Source all script functions
     log "Sourcing script functions..."
@@ -97,8 +94,8 @@ init_environment() {
     # Then source all other scripts
     while IFS= read -r -d '' script; do
         if [[ "$script" != *"/pre" ]] && [[ -f "$script" ]]; then
-            # Check if file is a shell script regardless of extension
-            if head -n1 "$script" | grep -q '^#!.*sh' || file "$script" | grep -q "shell script"; then
+            # Source any script that doesn't have an extension or is a shell script
+            if [[ "$script" != *.* ]] || grep -q '^#!/.*sh' "$script" 2>/dev/null; then
                 source "$script"
                 log "Sourced: $script"
             fi
@@ -129,12 +126,15 @@ init_environment() {
         error "Required functions not found: ${missing_functions[*]}"
     fi
     
-    # Initialize state tracking
-    source "$SCRIPT_DIR/../deployment_state.sh"
+    # Initialize state tracking last
+    source "$BASE_DIR/deployment_state.sh"
     init_state
     
     log "Environment initialization complete"
 }
 
-# Run environment initialization
+# Set up logging first
+setup_logging
+
+# Then initialize environment 
 init_environment
