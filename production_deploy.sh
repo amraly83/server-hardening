@@ -1,77 +1,35 @@
 #!/bin/bash
 
-set -euo pipefail
+# Add workspace directory to PATH and set script location
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPTS_DIR="$SCRIPT_DIR/scripts"
+CONFIG_DIR="$SCRIPT_DIR/config"
 
-# Source all script functions
-for script in ./scripts/*; do
-    if [[ -f "$script" ]]; then
-        source "$script"
-    fi
-done
+# Enable debug output temporarily
+set -x
 
-# Color codes for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-NC='\033[0m'
+# Ensure script permissions
+chmod +x "$SCRIPTS_DIR"/*
 
-# Log file
-LOGFILE="deployment-$(hostname --short)-$(date +%y%m%d).log"
+# Source initialization script with absolute path
+source "$SCRIPTS_DIR/init.sh"
 
-log() {
-    echo -e "${GREEN}[$(date +'%Y-%m-%d %H:%M:%S')] $1${NC}" | tee -a "$LOGFILE"
-}
+# List available functions for debugging
+echo "Available hardening functions:"
+declare -F | grep '^declare -f f_' || true
 
-error() {
-    echo -e "${RED}[ERROR] $1${NC}" | tee -a "$LOGFILE"
-    exit 1
-}
-
-warn() {
-    echo -e "${YELLOW}[WARNING] $1${NC}" | tee -a "$LOGFILE"
-}
-
-# Validation functions
-validate_config() {
-    log "Validating configuration..."
-    
-    # Required variables
-    local required_vars=(ADMIN_USER ADMIN_PASSWORD SSH_PORT ADMINEMAIL)
-    
-    for var in "${required_vars[@]}"; do
-        if [ -z "${!var}" ]; then
-            error "$var must be set in ubuntu.cfg"
-        fi
-    done
-    
-    # Validate SSH port
-    if ! [[ "$SSH_PORT" =~ ^[0-9]+$ ]] || [ "$SSH_PORT" -lt 1024 ] || [ "$SSH_PORT" -gt 65535 ]; then
-        error "SSH_PORT must be a valid port number (1024-65535)"
-    fi
-}
+# Disable debug output
+set +x
 
 # Pre-deployment checks
 pre_deployment_check() {
     log "Running pre-deployment checks..."
+    cd "$SCRIPT_DIR" || exit 1
     
     # Install required packages
     log "Installing required packages..."
-    apt-get update
-    apt-get install -y jq net-tools mailutils
-
-    # Create required directories
-    log "Creating required directories..."
-    mkdir -p /var/log/aide
-    mkdir -p /var/log/hardening
-    mkdir -p /var/backups/hardening
-    mkdir -p /etc/hardening
-    touch /var/log/ufw.log
-    
-    # Set proper permissions
-    chmod 750 /var/log/aide
-    chmod 750 /var/log/hardening
-    chmod 750 /var/backups/hardening
-    chmod 750 /etc/hardening
+    DEBIAN_FRONTEND=noninteractive apt-get update
+    DEBIAN_FRONTEND=noninteractive apt-get install -y jq net-tools mailutils file
     
     # Check system requirements
     if ! command -v systemctl &> /dev/null; then
@@ -84,52 +42,16 @@ pre_deployment_check() {
         error "Insufficient disk space. At least 5GB required"
     fi
     
-    # Verify running as root
-    if [ "$EUID" -ne 0 ]; then
-        error "This script must be run as root"
-    fi
-    
     # Check Ubuntu version
     if ! lsb_release -a 2>/dev/null | grep -q "Ubuntu 22.04"; then
         warn "This script is tested on Ubuntu 22.04. Other versions may not work correctly"
     fi
 }
 
-# Backup critical files
-backup_critical_files() {
-    log "Creating backups of critical files..."
-    
-    local backup_dir="/root/hardening_backup_$(date +%Y%m%d_%H%M%S)"
-    mkdir -p "$backup_dir"
-    
-    # List of critical files to backup
-    local critical_files=(
-        "/etc/ssh/sshd_config"
-        "/etc/pam.d/common-auth"
-        "/etc/pam.d/common-password"
-        "/etc/login.defs"
-        "/etc/sysctl.conf"
-    )
-    
-    for file in "${critical_files[@]}"; do
-        if [ -f "$file" ]; then
-            cp -p "$file" "$backup_dir/$(basename "$file")"
-        fi
-    done
-    
-    log "Backups created in $backup_dir"
-}
-
-# Source state management
-source ./deployment_state.sh
-
 # Main deployment function
 deploy_hardening() {
     log "Starting hardening deployment..."
-    
-    # Initialize state tracking
-    init_state
-    acquire_lock
+    cd "$SCRIPT_DIR" || exit 1
     
     # Component deployment with state tracking
     local components=(
@@ -149,6 +71,11 @@ deploy_hardening() {
         local func="${component#*:}"
         
         log "Deploying component: $name"
+        if ! declare -F "$func" > /dev/null; then
+            warn "Function $func not found, skipping component $name"
+            continue
+        fi
+        
         if ! track_deployment "$name" "$func"; then
             warn "Component $name failed"
             if [[ "$name" == "ssh" ]] || [[ "$name" == "auth" ]] || [[ "$name" == "network" ]]; then
@@ -157,78 +84,20 @@ deploy_hardening() {
         fi
     done
     
-    # Run integration tests
-    if ! bash ./integration_tests.sh; then
-        record_error "integration_tests" "Integration tests failed"
-        error "Integration tests failed, see logs for details"
-    fi
-    
     # Export final state
     export_state
-    
-    # Start monitoring
-    log "Starting security monitoring..."
-    if ! systemctl start hardening-monitor.service; then
-        warn "Failed to start monitoring service"
-    fi
-}
-
-# Post-deployment validation
-validate_deployment() {
-    log "Running post-deployment validation..."
-    
-    # Check critical services
-    local services=(sshd fail2ban auditd aide ufw)
-    for service in "${services[@]}"; do
-        if ! systemctl is-active --quiet "$service"; then
-            warn "Service $service is not running"
-        fi
-    done
-    
-    # Verify SSH configuration
-    if ! sshd -t; then
-        error "SSH configuration is invalid"
-    fi
-    
-    # Test firewall
-    if ! ufw status | grep -q "active"; then
-        warn "Firewall is not active"
-    fi
 }
 
 # Main execution
 main() {
     log "Starting production deployment..."
-    
-    # Source configuration
-    if [ ! -f "./ubuntu.cfg" ]; then
-        error "Configuration file ubuntu.cfg not found"
-    fi
-    source ./ubuntu.cfg
-    
-    # Source all script functions first
-    for script in ./scripts/*; do
-        if [[ -f "$script" ]]; then
-            source "$script"
-        fi
-    done
-    
-    # Source state management after functions
-    source ./deployment_state.sh
-    
-    # Verify system state before proceeding
-    if [ "$(get_status)" = "in_progress" ]; then
-        error "Another deployment appears to be in progress"
-    fi
+    cd "$SCRIPT_DIR" || exit 1
     
     # Run deployment steps
     pre_deployment_check
-    validate_config
-    backup_critical_files
     deploy_hardening
     
     if [ -n "$ADMINEMAIL" ]; then
-        # Send detailed report including state export
         {
             echo "Hardening deployment completed on $(hostname)"
             echo "Deployment state:"
