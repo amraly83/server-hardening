@@ -14,12 +14,13 @@ DEPLOYMENT_SEQUENCE=(
     ["1_init"]="init.sh"
     ["2_verify"]="pre-flight-check.sh"
     ["3_backup"]="rollback_manager.sh create_rollback_point pre_hardening"
-    ["4_network"]="network_isolation"
-    ["5_ssh"]="verify_ssh.sh sshdconfig"
-    ["6_auth"]="password mfa"
-    ["7_audit"]="auditd"
-    ["8_monitoring"]="security_monitoring"
-    ["9_verify"]="integration_tests.sh"
+    ["4_users"]="adduser"  # Create users first
+    ["5_network"]="network_isolation"
+    ["6_ssh"]="verify_ssh.sh sshdconfig"  # SSH after user creation
+    ["7_auth"]="password mfa"
+    ["8_audit"]="auditd"
+    ["9_monitoring"]="security_monitoring" 
+    ["10_verify"]="integration_tests.sh"
 )
 
 log_message() {
@@ -43,6 +44,12 @@ verify_prerequisites() {
         fi
         chmod 750 "$dir"
     done
+
+    # Verify admin user setting
+    if [ -z "${ADMIN_USER:-}" ]; then
+        log_message "ADMIN_USER not set in configuration" "ERROR"
+        exit 1
+    fi
 }
 
 run_deployment_sequence() {
@@ -51,27 +58,48 @@ run_deployment_sequence() {
     for stage in "${!DEPLOYMENT_SEQUENCE[@]}"; do
         log_message "Starting stage: $stage" "INFO"
         
-        # Split components by space instead of colon
+        # Split components by space
         IFS=' ' read -ra components <<< "${DEPLOYMENT_SEQUENCE[$stage]}"
         
         for component in "${components[@]}"; do
             log_message "Running component: $component" "INFO"
             
-            if ! bash "$SCRIPT_DIR/$component"; then
-                log_message "Failed at stage $stage, component $component" "ERROR"
-                if [[ $stage =~ ^[45] ]]; then  # Critical stages (network and SSH)
-                    log_message "Critical component failed, initiating rollback" "ERROR"
-                    if ! bash "$SCRIPT_DIR/rollback_manager.sh" "$last_successful_stage"; then
-                        log_message "Rollback failed" "ERROR"
+            # Special handling for user creation
+            if [[ $component == "adduser" ]]; then
+                if ! id -u "$ADMIN_USER" &>/dev/null; then
+                    log_message "Creating admin user: $ADMIN_USER" "INFO"
+                    if ! bash "$SCRIPT_DIR/$component"; then
+                        log_message "Failed to create admin user" "ERROR"
+                        exit 1
                     fi
-                    exit 1
+                else
+                    log_message "Admin user $ADMIN_USER already exists" "INFO"
+                    continue
                 fi
-                return 1
+            else
+                if ! bash "$SCRIPT_DIR/$component"; then
+                    log_message "Failed at stage $stage, component $component" "ERROR"
+                    if [[ $stage =~ ^[56] ]]; then  # Critical stages (network and SSH)
+                        log_message "Critical component failed, initiating rollback" "ERROR"
+                        if ! bash "$SCRIPT_DIR/rollback_manager.sh" rollback "$last_successful_stage"; then
+                            log_message "Rollback failed" "ERROR"
+                        fi
+                        exit 1
+                    fi
+                    return 1
+                fi
             fi
         done
         
         last_successful_stage=$stage
         log_message "Stage $stage completed successfully" "INFO"
+        
+        # Create rollback point after each major stage
+        if [[ $stage =~ ^[456789] ]]; then
+            if ! bash "$SCRIPT_DIR/rollback_manager.sh" create "$stage"; then
+                log_message "Failed to create rollback point for stage $stage" "WARNING"
+            fi
+        fi
     done
     
     return 0

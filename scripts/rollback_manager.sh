@@ -6,144 +6,173 @@ STATE_DIR="/var/lib/hardening"
 BACKUP_DIR="/var/backups/hardening"
 ROLLBACK_LOG="/var/log/hardening/rollback.log"
 
-# State tracking for rollback points
-declare -A ROLLBACK_POINTS=(
-    ["pre_hardening"]="Initial system state"
-    ["post_ssh"]="After SSH hardening"
-    ["post_firewall"]="After firewall configuration"
-    ["post_audit"]="After audit setup"
-    ["post_monitoring"]="After monitoring setup"
-    ["complete"]="Full deployment complete"
-)
+log_message() {
+    local message="$1"
+    local level="${2:-INFO}"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] [$level] $message" | tee -a "$ROLLBACK_LOG"
+}
+
+ensure_dirs() {
+    for dir in "$STATE_DIR" "$BACKUP_DIR" "$(dirname "$ROLLBACK_LOG")"; do
+        if ! mkdir -p "$dir"; then
+            echo "Failed to create directory: $dir" >&2
+            return 1
+        fi
+        chmod 750 "$dir"
+    done
+}
 
 create_rollback_point() {
     local point_name="$1"
     local timestamp=$(date +%Y%m%d_%H%M%S)
     local point_dir="$BACKUP_DIR/rollback_${point_name}_${timestamp}"
     
-    echo "Creating rollback point: $point_name" | tee -a "$ROLLBACK_LOG"
+    log_message "Creating rollback point: $point_name" "INFO"
+    
+    ensure_dirs
     
     # Create backup directory
     mkdir -p "$point_dir"
     
-    # Backup critical configurations
-    tar czf "$point_dir/etc_backup.tar.gz" \
-        /etc/ssh \
-        /etc/pam.d \
-        /etc/security \
-        /etc/audit \
-        /etc/ufw \
-        /etc/systemd/system
-        
-    # Save service states
-    systemctl list-units --state=active,failed > "$point_dir/service_state.txt"
+    # Backup critical configurations based on stage
+    case "$point_name" in
+        "4_users")
+            tar czf "$point_dir/users_backup.tar.gz" \
+                /etc/passwd /etc/shadow /etc/group /etc/gshadow \
+                /etc/sudoers /etc/sudoers.d 2>/dev/null || true
+            ;;
+        "5_network")
+            tar czf "$point_dir/network_backup.tar.gz" \
+                /etc/netplan /etc/network /etc/hosts /etc/resolv.conf \
+                /etc/ufw 2>/dev/null || true
+            ;;
+        "6_ssh")
+            tar czf "$point_dir/ssh_backup.tar.gz" \
+                /etc/ssh /root/.ssh /home/*/.ssh 2>/dev/null || true
+            ;;
+        "7_auth")
+            tar czf "$point_dir/auth_backup.tar.gz" \
+                /etc/pam.d /etc/security /etc/login.defs \
+                /etc/fail2ban 2>/dev/null || true
+            ;;
+        "8_audit")
+            tar czf "$point_dir/audit_backup.tar.gz" \
+                /etc/audit /etc/default/auditd \
+                /etc/systemd/system/auditd.service.d 2>/dev/null || true
+            ;;
+        "9_monitoring")
+            tar czf "$point_dir/monitoring_backup.tar.gz" \
+                /etc/logrotate.d /etc/rsyslog.d /etc/aide \
+                /etc/rkhunter.conf 2>/dev/null || true
+            ;;
+        *)
+            tar czf "$point_dir/full_backup.tar.gz" \
+                /etc/ssh /etc/pam.d /etc/security /etc/audit \
+                /etc/systemd/system /etc/ufw 2>/dev/null || true
+            ;;
+    esac
     
-    # Save iptables rules
-    iptables-save > "$point_dir/iptables.rules"
-    
-    # Save current state metadata
+    # Record state metadata
     cat > "$point_dir/metadata.json" << EOF
 {
     "point_name": "$point_name",
     "timestamp": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")",
-    "description": "${ROLLBACK_POINTS[$point_name]}",
-    "system_info": {
-        "kernel": "$(uname -r)",
-        "hostname": "$(hostname)",
-        "uptime": "$(uptime -p)"
-    }
+    "hostname": "$(hostname)",
+    "stage": "$point_name"
 }
 EOF
-    
-    # Update current rollback point symlink
-    ln -sf "$point_dir" "$STATE_DIR/current_rollback"
-    
-    echo "Rollback point created at $point_dir" | tee -a "$ROLLBACK_LOG"
+
+    log_message "Rollback point created: $point_dir" "SUCCESS"
 }
 
-perform_rollback() {
-    local point_name="$1"
-    local target_backup
+rollback() {
+    local target_stage="$1"
+    local latest_backup
     
-    echo "Initiating rollback to point: $point_name" | tee -a "$ROLLBACK_LOG"
+    log_message "Initiating rollback to stage: $target_stage" "INFO"
     
-    # Find most recent backup for given point
-    target_backup=$(find "$BACKUP_DIR" -maxdepth 1 -name "rollback_${point_name}_*" | sort -r | head -n1)
+    # Find latest backup for the target stage
+    latest_backup=$(find "$BACKUP_DIR" -name "rollback_${target_stage}_*" -type d -print0 | xargs -0 ls -td | head -n1)
     
-    if [ -z "$target_backup" ]; then
-        echo "ERROR: No rollback point found for $point_name" | tee -a "$ROLLBACK_LOG"
+    if [ -z "$latest_backup" ]; then
+        log_message "No backup found for stage $target_stage" "ERROR"
         return 1
     fi
     
-    # Stop affected services
-    systemctl stop sshd fail2ban auditd || true
-    
-    # Restore configurations
-    cd /
-    tar xzf "$target_backup/etc_backup.tar.gz"
-    
-    # Restore firewall rules
-    iptables-restore < "$target_backup/iptables.rules"
-    
-    # Restart services
-    systemctl daemon-reload
-    systemctl restart sshd fail2ban auditd
-    
-    echo "Rollback completed successfully" | tee -a "$ROLLBACK_LOG"
-    
-    # Verify critical services
-    local failed_services=()
-    while read -r service; do
-        if ! systemctl is-active --quiet "$service"; then
-            failed_services+=("$service")
-        fi
-    done < <(grep "\.service" "$target_backup/service_state.txt" | awk '{print $1}')
-    
-    if [ ${#failed_services[@]} -gt 0 ]; then
-        echo "WARNING: Some services failed to restart: ${failed_services[*]}" | tee -a "$ROLLBACK_LOG"
-        return 1
-    fi
-}
-
-cleanup_old_rollbacks() {
-    # Keep only last 3 rollbacks per point
-    for point in "${!ROLLBACK_POINTS[@]}"; do
-        find "$BACKUP_DIR" -maxdepth 1 -name "rollback_${point}_*" | sort -r | tail -n +4 | xargs -r rm -rf
-    done
-}
-
-# Main execution
-main() {
-    local command="$1"
-    local point_name="${2:-}"
-    
-    case "$command" in
-        create)
-            if [ -z "$point_name" ] || [ -z "${ROLLBACK_POINTS[$point_name]:-}" ]; then
-                echo "ERROR: Invalid rollback point name"
-                exit 1
-            fi
-            create_rollback_point "$point_name"
-            cleanup_old_rollbacks
+    # Extract backup based on stage
+    case "$target_stage" in
+        "4_users")
+            tar xzf "$latest_backup/users_backup.tar.gz" -C / 2>/dev/null || true
             ;;
-        rollback)
-            if [ -z "$point_name" ] || [ -z "${ROLLBACK_POINTS[$point_name]:-}" ]; then
-                echo "ERROR: Invalid rollback point name"
-                exit 1
-            fi
-            perform_rollback "$point_name"
+        "5_network")
+            tar xzf "$latest_backup/network_backup.tar.gz" -C / 2>/dev/null || true
+            systemctl restart networking ufw
             ;;
-        list)
-            find "$BACKUP_DIR" -maxdepth 1 -name "rollback_*" -type d | sort -r | \
-                while read -r backup; do
-                    jq -r '"Point: \(.point_name)\nTime: \(.timestamp)\nDescription: \(.description)"' \
-                        "$backup/metadata.json"
-                    echo "---"
-                done
+        "6_ssh")
+            tar xzf "$latest_backup/ssh_backup.tar.gz" -C / 2>/dev/null || true
+            systemctl restart sshd
+            ;;
+        "7_auth")
+            tar xzf "$latest_backup/auth_backup.tar.gz" -C / 2>/dev/null || true
+            systemctl restart fail2ban
+            ;;
+        "8_audit")
+            tar xzf "$latest_backup/audit_backup.tar.gz" -C / 2>/dev/null || true
+            systemctl restart auditd
+            ;;
+        "9_monitoring")
+            tar xzf "$latest_backup/monitoring_backup.tar.gz" -C / 2>/dev/null || true
+            systemctl restart rsyslog aide rkhunter
             ;;
         *)
-            echo "Usage: $0 {create|rollback|list} [point_name]"
-            exit 1
+            tar xzf "$latest_backup/full_backup.tar.gz" -C / 2>/dev/null || true
+            ;;
+    esac
+    
+    log_message "Rollback completed to stage: $target_stage" "SUCCESS"
+}
+
+list_points() {
+    echo "Available rollback points:"
+    find "$BACKUP_DIR" -name "rollback_*" -type d -exec basename {} \; | sort
+}
+
+usage() {
+    echo "Usage: $0 {create|rollback|list} [point_name]"
+    echo "Commands:"
+    echo "  create <point_name>  - Create a new rollback point"
+    echo "  rollback <stage>     - Rollback to specified stage"
+    echo "  list                 - List available rollback points"
+    exit 1
+}
+
+main() {
+    if [ $# -lt 1 ]; then
+        usage
+    fi
+    
+    ensure_dirs
+    
+    case "$1" in
+        create)
+            if [ -z "${2:-}" ]; then
+                echo "Error: Point name required for create command"
+                usage
+            fi
+            create_rollback_point "$2"
+            ;;
+        rollback)
+            if [ -z "${2:-}" ]; then
+                echo "Error: Stage required for rollback command"
+                usage
+            fi
+            rollback "$2"
+            ;;
+        list)
+            list_points
+            ;;
+        *)
+            usage
             ;;
     esac
 }
