@@ -86,11 +86,12 @@ init_environment() {
         error "Required script 'pre' not found"
     fi
     
-    # Then source all other scripts
+    # Then source all other scripts except init.sh itself
     while IFS= read -r -d '' script; do
-        if [[ "$script" != *"/pre" ]] && [[ -f "$script" ]]; then
-            # Source any script that doesn't have an extension or is a shell script
-            if [[ "$script" != *.* ]] || grep -q '^#!/.*sh' "$script" 2>/dev/null; then
+        # Skip init.sh and pre to avoid recursion
+        if [[ "$(basename "$script")" != "init.sh" ]] && [[ "$(basename "$script")" != "pre" ]]; then
+            # Only source shell scripts
+            if [[ -f "$script" ]] && { [[ "$script" != *.* ]] || grep -q '^#!/.*sh' "$script" 2>/dev/null; }; then
                 source "$script"
                 log "Sourced: $script"
             fi

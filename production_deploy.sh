@@ -1,17 +1,39 @@
 #!/bin/bash
 
-# Add workspace directory to PATH and set script location
+# Setup script location and configuration
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPTS_DIR="$SCRIPT_DIR/scripts"
 CONFIG_DIR="$SCRIPT_DIR/config"
+DEPLOYMENT_LOG="/var/log/hardening/deployment.log"
+
+# Ensure we're root
+if [ "$EUID" -ne 0 ]; then
+    echo "This script must be run as root"
+    exit 1
+fi
+
+# Error handling
+set -euo pipefail
+trap 'echo "Error occurred at line $LINENO. Exit code: $?"' ERR
 
 # Install required packages first, before any other operations
 install_dependencies() {
-    echo "Installing required packages..."
-    export DEBIAN_FRONTEND=noninteractive
-    apt-get update
-    apt-get install -y jq net-tools mailutils file
+    {
+        echo "Installing required packages..."
+        export DEBIAN_FRONTEND=noninteractive
+        # Update package list only if it's older than 1 hour
+        if [ ! -f /var/cache/apt/pkgcache.bin ] || [ "$(find /var/cache/apt/pkgcache.bin -mmin +60)" ]; then
+            apt-get update
+        fi
+        apt-get install -y jq net-tools mailutils file bc curl
+    } >> "$DEPLOYMENT_LOG" 2>&1 || {
+        echo "Failed to install required packages. Check $DEPLOYMENT_LOG for details"
+        exit 1
+    }
 }
+
+# Ensure log directory exists
+mkdir -p "$(dirname "$DEPLOYMENT_LOG")"
 
 # Run initial package installation
 install_dependencies
@@ -23,6 +45,10 @@ set -x
 chmod +x "$SCRIPTS_DIR"/*
 
 # Source initialization script with absolute path
+if [ ! -f "$SCRIPTS_DIR/init.sh" ]; then
+    echo "ERROR: init.sh not found in $SCRIPTS_DIR"
+    exit 1
+fi
 source "$SCRIPTS_DIR/init.sh"
 
 # List available functions for debugging
