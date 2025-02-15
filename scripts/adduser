@@ -1,6 +1,134 @@
+#!/bin/bash
+
+set -euo pipefail
+
+log_message() {
+    local message="$1"
+    local level="${2:-INFO}"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] [$level] $message"
+}
+
+validate_user_params() {
+    # Check required variables
+    if [ -z "${ADMIN_USER:-}" ]; then
+        log_message "ADMIN_USER is not set" "ERROR"
+        return 1
+    fi
+    
+    if [ -z "${ADMIN_PASSWORD:-}" ]; then
+        log_message "ADMIN_PASSWORD is not set" "ERROR"
+        return 1
+    fi
+
+    # Validate username format
+    if ! [[ "$ADMIN_USER" =~ ^[a-z_][a-z0-9_-]*[$]?$ ]]; then
+        log_message "Invalid username format: $ADMIN_USER" "ERROR"
+        return 1
+    fi
+
+    # Check password strength
+    local password_score=0
+    [[ "${#ADMIN_PASSWORD}" -ge 12 ]] && ((password_score++))
+    [[ "$ADMIN_PASSWORD" =~ [A-Z] ]] && ((password_score++))
+    [[ "$ADMIN_PASSWORD" =~ [a-z] ]] && ((password_score++))
+    [[ "$ADMIN_PASSWORD" =~ [0-9] ]] && ((password_score++))
+    [[ "$ADMIN_PASSWORD" =~ [^[:alnum:]] ]] && ((password_score++))
+
+    if [ "$password_score" -lt 4 ]; then
+        log_message "Password does not meet complexity requirements" "ERROR"
+        return 1
+    fi
+
+    return 0
+}
+
+setup_user_environment() {
+    local user_home="/home/$ADMIN_USER"
+
+    # Create home directory if it doesn't exist
+    if [ ! -d "$user_home" ]; then
+        mkdir -p "$user_home"
+        chmod 750 "$user_home"
+    fi
+
+    # Copy default profile files
+    for file in /etc/skel/.*; do
+        if [ -f "$file" ]; then
+            cp -p "$file" "$user_home/"
+        fi
+    done
+
+    # Create SSH directory
+    mkdir -p "$user_home/.ssh"
+    chmod 700 "$user_home/.ssh"
+    touch "$user_home/.ssh/authorized_keys"
+    chmod 600 "$user_home/.ssh/authorized_keys"
+
+    # Set proper ownership
+    chown -R "$ADMIN_USER:$ADMIN_USER" "$user_home"
+}
+
+create_admin_user() {
+    log_message "Starting admin user creation process" "INFO"
+
+    if ! validate_user_params; then
+        return 1
+    fi
+
+    # Check if user already exists
+    if id -u "$ADMIN_USER" >/dev/null 2>&1; then
+        if groups "$ADMIN_USER" | grep -qE '(sudo|wheel)'; then
+            log_message "Admin user $ADMIN_USER already exists with sudo access" "INFO"
+            return 0
+        else
+            log_message "User exists but missing sudo access, fixing..." "WARNING"
+        fi
+    else
+        # Create new user with secure defaults
+        if ! useradd -m -s /bin/bash \
+            -K PASS_MAX_DAYS=90 \
+            -K PASS_MIN_DAYS=1 \
+            -K PASS_WARN_AGE=7 \
+            "$ADMIN_USER"; then
+            log_message "Failed to create user $ADMIN_USER" "ERROR"
+            return 1
+        fi
+    fi
+
+    # Set password with policy enforcement
+    echo "$ADMIN_USER:$ADMIN_PASSWORD" | chpasswd
+
+    # Force password change on first login
+    chage -d 0 "$ADMIN_USER"
+
+    # Add to sudo group
+    if ! usermod -aG sudo "$ADMIN_USER"; then
+        log_message "Failed to add $ADMIN_USER to sudo group" "ERROR"
+        return 1
+    fi
+
+    # Setup user environment and SSH
+    if ! setup_user_environment; then
+        log_message "Failed to setup user environment" "ERROR"
+        return 1
+    fi
+
+    # Configure sudo access with password requirement
+    echo "$ADMIN_USER ALL=(ALL:ALL) ALL" > "/etc/sudoers.d/$ADMIN_USER"
+    chmod 440 "/etc/sudoers.d/$ADMIN_USER"
+
+    log_message "Admin user $ADMIN_USER created and configured successfully" "SUCCESS"
+    return 0
+}
+
+# Main execution
+if ! create_admin_user; then
+    log_message "Failed to setup admin user" "ERROR"
+    exit 1
+fi
+
 function f_adduser {
   echo "[$SCRIPT_COUNT] $ADDUSER and $USERADD"
-
 
   sed -i -e 's/^DIR_MODE=.*/DIR_MODE=0750/' -e 's/^#DIR_MODE=.*/DIR_MODE=0750/' "$ADDUSER"
   sed -i -e 's/^DSHELL=.*/DSHELL=\/bin\/false/' -e 's/^#DSHELL=.*/DSHELL=\/bin\/false/' "$ADDUSER"
