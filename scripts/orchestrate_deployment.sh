@@ -20,7 +20,7 @@ DEPLOYMENT_SEQUENCE=(
     ["7_auth"]="password mfa"
     ["8_audit"]="auditd"
     ["9_monitoring"]="security_monitoring" 
-    ["10_verify"]="integration_tests.sh"
+    ["10_verify"]="../integration_tests.sh"  # Updated path to reference parent directory
 )
 
 log_message() {
